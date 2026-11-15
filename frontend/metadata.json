@@ -1,0 +1,6 @@
+{
+  "name": "Vastra Atelier — Boutique Textiles & Handloom Couture",
+  "description": "Explore handwoven silk sarees, artisanal cottons, bridal weaves, and bespoke designer fabrics at Vastra Atelier.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

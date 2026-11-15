@@ -1,0 +1,87 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Cormorant Garamond', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+    --bg-canvas: #fafafa;
+    --bg-surface: #ffffff;
+    --bg-subtle: #f3f4f6;
+    --text-primary: #141416;
+    --text-secondary: #52525b;
+    --border-color: #e5e7eb;
+    --accent: #1e2b4f;
+    --accent-hover: #15203c;
+    --accent-gold: #9a7b3e;
+  }
+
+  html.dark,
+  html.theme-dark {
+    --bg-canvas: #0f1013;
+    --bg-surface: #181a20;
+    --bg-subtle: #22252d;
+    --text-primary: #f4f4f6;
+    --text-secondary: #a1a1aa;
+    --border-color: #2b2f3a;
+    --accent: #d4b475;
+    --accent-hover: #c2a05e;
+    --accent-gold: #e5c98b;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    overflow-x: clip;
+  }
+
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    overflow-x: clip;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+/* Smooth kinetic drape fallback animation when video stream buffers */
+@keyframes atelier-pan {
+  0% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.06) translate3d(-1.5%, -1%, 0);
+  }
+  100% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+
+.animate-atelier-pan {
+  animation: atelier-pan 14s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-atelier-pan {
+    animation: none;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
