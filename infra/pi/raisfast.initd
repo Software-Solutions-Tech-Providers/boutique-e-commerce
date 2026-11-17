@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+name="raisfast"
+supervisor="supervise-daemon"
+command="/data/raisfast/bin/raisfast"
+command_args="server start"
+command_user="shop:nogroup"
+directory="/data/raisfast"
+output_log="/var/log/raisfast.log"
+error_log="/var/log/raisfast.log"
+respawn_delay=5
+respawn_max=0
+depend() {
+    need net localmount
+}

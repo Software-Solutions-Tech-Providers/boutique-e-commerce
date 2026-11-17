@@ -11,6 +11,19 @@ use crate::middleware::auth::AuthUser;
 use crate::services::tenant::{CreateTenantRequest, UpdateTenantRequest};
 use crate::utils::pagination::PaginationParams;
 
+/// PATCHED: tenants may only be created/changed/deleted while working in the
+/// platform tenant (`default`). Listing stays open (the admin tenant switcher
+/// needs it). A super admin with no X-Tenant-ID header counts as default.
+fn ensure_platform_tenant(auth: &AuthUser) -> AppResult<()> {
+    match auth.tenant_id() {
+        None => Ok(()),
+        Some(t) if t == crate::constants::DEFAULT_TENANT => Ok(()),
+        Some(_) => Err(AppError::BadRequest(
+            "tenant_management_requires_default: switch to the default (platform) tenant to manage tenants".into(),
+        )),
+    }
+}
+
 pub fn routes(
     registry: &mut crate::server::RouteRegistry,
     config: &crate::config::app::AppConfig,
@@ -128,9 +141,10 @@ pub async fn get_tenant(
 )]
 pub async fn create_tenant(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Json(req): Json<CreateTenantRequest>,
 ) -> AppResult<ApiResponse<TenantResponse>> {
+    ensure_platform_tenant(&auth)?;
     let tenant = state.tenant.create(&req).await?;
     Ok(ApiResponse::success(TenantResponse::from_tenant(tenant)))
 }
@@ -143,10 +157,11 @@ pub async fn create_tenant(
 )]
 pub async fn update_tenant(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(id): Path<String>,
     Json(req): Json<UpdateTenantRequest>,
 ) -> AppResult<ApiResponse<TenantResponse>> {
+    ensure_platform_tenant(&auth)?;
     let id = crate::types::snowflake_id::parse_id(&id)?;
     let tenant = state.tenant.update(id, &req).await?;
     Ok(ApiResponse::success(TenantResponse::from_tenant(tenant)))
@@ -160,9 +175,10 @@ pub async fn update_tenant(
 )]
 pub async fn delete_tenant(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Path(id): Path<String>,
 ) -> AppResult<ApiResponse<serde_json::Value>> {
+    ensure_platform_tenant(&auth)?;
     let id = crate::types::snowflake_id::parse_id(&id)?;
     state.tenant.delete(id).await?;
     Ok(ApiResponse::success(serde_json::json!({
@@ -177,9 +193,10 @@ pub async fn delete_tenant(
 )]
 pub async fn admin_batch(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: AuthUser,
     Json(req): Json<BatchRequest>,
 ) -> AppResult<ApiResponse<BatchResponse>> {
+    ensure_platform_tenant(&auth)?;
     crate::errors::validation::validate(&req)?;
     let mut affected = 0usize;
     for raw_id in &req.ids {

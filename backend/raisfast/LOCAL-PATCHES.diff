@@ -1,12 +1,9 @@
-diff --git a/Cargo.lock b/Cargo.lock
-index afc72a31..3ecbba79 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -4428,22 +4428,6 @@ dependencies = [
-  "tower-service",
+@@ -4429,22 +4429,6 @@
  ]
  
--[[package]]
+ [[package]]
 -name = "hyper-tls"
 -version = "0.6.0"
 -source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22,10 +19,11 @@ index afc72a31..3ecbba79 100644
 - "tower-service",
 -]
 -
- [[package]]
+-[[package]]
  name = "hyper-util"
  version = "0.1.20"
-@@ -7612,12 +7596,10 @@ dependencies = [
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -7612,12 +7596,10 @@
   "http-body-util",
   "hyper 1.11.0",
   "hyper-rustls 0.27.9",
@@ -38,7 +36,7 @@ index afc72a31..3ecbba79 100644
   "percent-encoding",
   "pin-project-lite",
   "quinn",
-@@ -7629,7 +7611,6 @@ dependencies = [
+@@ -7629,7 +7611,6 @@
   "serde_urlencoded",
   "sync_wrapper",
   "tokio",
@@ -46,11 +44,9 @@ index afc72a31..3ecbba79 100644
   "tokio-rustls 0.26.4",
   "tokio-util",
   "tower",
-diff --git a/crates/core/Cargo.toml b/crates/core/Cargo.toml
-index 4ee0e85c..cece106e 100644
 --- a/crates/core/Cargo.toml
 +++ b/crates/core/Cargo.toml
-@@ -178,7 +178,10 @@ wasmtime-wasi = { version = "47", optional = true }
+@@ -178,7 +178,10 @@
  rquickjs = { version = "0.12", features = ["futures", "parallel", "loader", "macro"], optional = true }
  mlua = { version = "0.12", features = ["lua54", "vendored", "send", "serde", "macros"], optional = true }
  rhai = { version = "1.25", features = ["serde", "sync", "internals"], optional = true }
@@ -62,11 +58,95 @@ index 4ee0e85c..cece106e 100644
  flate2 = "1"
  tar = "0.4"
  toml = { version = "1", features = ["preserve_order"] }
-diff --git a/crates/core/src/handlers/oauth.rs b/crates/core/src/handlers/oauth.rs
-index 4972c74f..0c546e57 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -453,6 +453,9 @@
+     let services = svc_builder.build();
+ 
+     let llm_router = crate::llm::service::LlmRouter::new(pool.clone()).await;
++    // PATCHED: method only exists with the JS plugin engine (service.rs gates it
++    // on `rquickjs`); the call was ungated, breaking builds without plugin-js.
++    #[cfg(feature = "rquickjs")]
+     llm_router.init_provider_extensions(config).await;
+ 
+     let kb_runtime = match crate::kb::build_kb_runtime(config, llm_router.clone()) {
+@@ -602,6 +605,7 @@
+         registry.register(Box::new(crate::oauth::google::GoogleProvider::new(
+             google.client_id.clone(),
+             google.client_secret.clone(),
++            config.base_url.clone(),
+         )));
+         tracing::info!("OAuth provider registered: google");
+     }
+--- a/crates/core/src/oauth.rs
++++ b/crates/core/src/oauth.rs
+@@ -183,7 +183,11 @@
+ 
+     #[test]
+     fn google_authorize_url_format() {
+-        let provider = google::GoogleProvider::new("my_client_id".into(), "secret".into());
++        let provider = google::GoogleProvider::new(
++            "my_client_id".into(),
++            "secret".into(),
++            "https://example.com".into(),
++        );
+         let url = provider.authorize_url("state123", "challenge456");
+         assert!(url.contains("client_id=my_client_id"));
+         assert!(url.contains("state=state123"));
+--- a/crates/core/src/oauth/google.rs
++++ b/crates/core/src/oauth/google.rs
+@@ -7,14 +7,24 @@
+ pub struct GoogleProvider {
+     client_id: String,
+     client_secret: String,
++    /// PATCHED: Google requires `redirect_uri` on both the authorize request
++    /// and the token exchange; upstream sent neither, so every login failed.
++    redirect_uri: String,
+ }
+ 
+ impl GoogleProvider {
+-    /// Create a Google Provider
+-    pub fn new(client_id: String, client_secret: String) -> Self {
++    /// Create a Google Provider. `base_url` is the public site URL (BASE_URL);
++    /// the callback must be registered in Google Cloud Console exactly as
++    /// `{base_url}/api/v1/auth/oauth/google/callback`.
++    pub fn new(client_id: String, client_secret: String, base_url: String) -> Self {
++        let redirect_uri = format!(
++            "{}/api/v1/auth/oauth/google/callback",
++            base_url.trim_end_matches('/')
++        );
+         Self {
+             client_id,
+             client_secret,
++            redirect_uri,
+         }
+     }
+ }
+@@ -27,8 +37,11 @@
+ 
+     fn authorize_url(&self, state: &str, code_challenge: &str) -> String {
+         format!(
+-            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&state={}&code_challenge={}&code_challenge_method=S256&scope=openid+email+profile&response_type=code&access_type=offline",
+-            self.client_id, state, code_challenge
++            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=openid+email+profile&response_type=code&access_type=offline",
++            self.client_id,
++            urlencoding::encode(&self.redirect_uri),
++            state,
++            code_challenge
+         )
+     }
+ 
+@@ -45,6 +58,7 @@
+                 "client_secret": self.client_secret,
+                 "code": code,
+                 "code_verifier": code_verifier,
++                "redirect_uri": self.redirect_uri,
+                 "grant_type": "authorization_code",
+             }))
+             .send()
 --- a/crates/core/src/handlers/oauth.rs
 +++ b/crates/core/src/handlers/oauth.rs
-@@ -141,26 +141,73 @@ pub async fn callback(
+@@ -141,26 +141,73 @@
      match result {
          oauth::OAuthCallbackResult::LoginSuccess(resp) => {
              let resp = *resp;
@@ -146,33 +226,98 @@ index 4972c74f..0c546e57 100644
          }
          oauth::OAuthCallbackResult::BindingRequired { .. } => Err(AppError::BadRequest(
              "binding required but not yet implemented".into(),
-diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
-index a7e01a7b..4e38d12c 100644
---- a/crates/core/src/lib.rs
-+++ b/crates/core/src/lib.rs
-@@ -453,6 +453,9 @@ pub async fn build_app_state(
-     let services = svc_builder.build();
- 
-     let llm_router = crate::llm::service::LlmRouter::new(pool.clone()).await;
-+    // PATCHED: method only exists with the JS plugin engine (service.rs gates it
-+    // on `rquickjs`); the call was ungated, breaking builds without plugin-js.
-+    #[cfg(feature = "rquickjs")]
-     llm_router.init_provider_extensions(config).await;
- 
-     let kb_runtime = match crate::kb::build_kb_runtime(config, llm_router.clone()) {
-@@ -602,6 +605,7 @@ pub fn build_oauth_registry(config: &AppConfig) -> OAuthProviderRegistry {
-         registry.register(Box::new(crate::oauth::google::GoogleProvider::new(
-             google.client_id.clone(),
-             google.client_secret.clone(),
-+            config.base_url.clone(),
-         )));
-         tracing::info!("OAuth provider registered: google");
+--- a/crates/core/src/handlers/auth.rs
++++ b/crates/core/src/handlers/auth.rs
+@@ -246,6 +246,15 @@
+         ));
      }
-diff --git a/crates/core/src/llm/relay/auth.rs b/crates/core/src/llm/relay/auth.rs
-index 2d52c0fb..ecbdc1b9 100644
+     validation::validate(&req)?;
++    // PATCHED: the default tenant is the platform tenant (super admins only).
++    // Self-registration must target a shop via X-Tenant-ID; only an admin may
++    // create accounts in default.
++    let target = auth.tenant_id().unwrap_or(crate::constants::DEFAULT_TENANT);
++    if target == crate::constants::DEFAULT_TENANT && !auth.is_admin() {
++        return Err(crate::errors::app_error::AppError::BadRequest(
++            "registration_requires_tenant: sign up within a shop (X-Tenant-ID)".into(),
++        ));
++    }
+     let user = auth::register(
+         &state.emitter,
+         req,
+--- a/crates/core/src/handlers/tenant.rs
++++ b/crates/core/src/handlers/tenant.rs
+@@ -11,6 +11,19 @@
+ use crate::services::tenant::{CreateTenantRequest, UpdateTenantRequest};
+ use crate::utils::pagination::PaginationParams;
+ 
++/// PATCHED: tenants may only be created/changed/deleted while working in the
++/// platform tenant (`default`). Listing stays open (the admin tenant switcher
++/// needs it). A super admin with no X-Tenant-ID header counts as default.
++fn ensure_platform_tenant(auth: &AuthUser) -> AppResult<()> {
++    match auth.tenant_id() {
++        None => Ok(()),
++        Some(t) if t == crate::constants::DEFAULT_TENANT => Ok(()),
++        Some(_) => Err(AppError::BadRequest(
++            "tenant_management_requires_default: switch to the default (platform) tenant to manage tenants".into(),
++        )),
++    }
++}
++
+ pub fn routes(
+     registry: &mut crate::server::RouteRegistry,
+     config: &crate::config::app::AppConfig,
+@@ -128,9 +141,10 @@
+ )]
+ pub async fn create_tenant(
+     State(state): State<AppState>,
+-    _auth: AuthUser,
++    auth: AuthUser,
+     Json(req): Json<CreateTenantRequest>,
+ ) -> AppResult<ApiResponse<TenantResponse>> {
++    ensure_platform_tenant(&auth)?;
+     let tenant = state.tenant.create(&req).await?;
+     Ok(ApiResponse::success(TenantResponse::from_tenant(tenant)))
+ }
+@@ -143,10 +157,11 @@
+ )]
+ pub async fn update_tenant(
+     State(state): State<AppState>,
+-    _auth: AuthUser,
++    auth: AuthUser,
+     Path(id): Path<String>,
+     Json(req): Json<UpdateTenantRequest>,
+ ) -> AppResult<ApiResponse<TenantResponse>> {
++    ensure_platform_tenant(&auth)?;
+     let id = crate::types::snowflake_id::parse_id(&id)?;
+     let tenant = state.tenant.update(id, &req).await?;
+     Ok(ApiResponse::success(TenantResponse::from_tenant(tenant)))
+@@ -160,9 +175,10 @@
+ )]
+ pub async fn delete_tenant(
+     State(state): State<AppState>,
+-    _auth: AuthUser,
++    auth: AuthUser,
+     Path(id): Path<String>,
+ ) -> AppResult<ApiResponse<serde_json::Value>> {
++    ensure_platform_tenant(&auth)?;
+     let id = crate::types::snowflake_id::parse_id(&id)?;
+     state.tenant.delete(id).await?;
+     Ok(ApiResponse::success(serde_json::json!({
+@@ -177,9 +193,10 @@
+ )]
+ pub async fn admin_batch(
+     State(state): State<AppState>,
+-    _auth: AuthUser,
++    auth: AuthUser,
+     Json(req): Json<BatchRequest>,
+ ) -> AppResult<ApiResponse<BatchResponse>> {
++    ensure_platform_tenant(&auth)?;
+     crate::errors::validation::validate(&req)?;
+     let mut affected = 0usize;
+     for raw_id in &req.ids {
 --- a/crates/core/src/llm/relay/auth.rs
 +++ b/crates/core/src/llm/relay/auth.rs
-@@ -92,9 +92,17 @@ pub async fn authenticate(pool: &Pool, bearer: &str, client_ip: &str) -> AppResu
+@@ -92,9 +92,17 @@
          }
      };
      // Owner user status: a banned user's tokens die with the account.
@@ -192,73 +337,790 @@ index 2d52c0fb..ecbdc1b9 100644
          if user.status != crate::models::user::UserStatus::Active {
              return Err(AppError::Unauthorized);
          }
-diff --git a/crates/core/src/oauth.rs b/crates/core/src/oauth.rs
-index d50b47e9..37d30d70 100644
---- a/crates/core/src/oauth.rs
-+++ b/crates/core/src/oauth.rs
-@@ -183,7 +183,11 @@ mod tests {
- 
-     #[test]
-     fn google_authorize_url_format() {
--        let provider = google::GoogleProvider::new("my_client_id".into(), "secret".into());
-+        let provider = google::GoogleProvider::new(
-+            "my_client_id".into(),
-+            "secret".into(),
-+            "https://example.com".into(),
-+        );
-         let url = provider.authorize_url("state123", "challenge456");
-         assert!(url.contains("client_id=my_client_id"));
-         assert!(url.contains("state=state123"));
-diff --git a/crates/core/src/oauth/google.rs b/crates/core/src/oauth/google.rs
-index 0c6f56f7..2159e6be 100644
---- a/crates/core/src/oauth/google.rs
-+++ b/crates/core/src/oauth/google.rs
-@@ -7,14 +7,24 @@ use crate::oauth::{OAuthProvider, OAuthTokenResponse, OAuthUserInfo};
- pub struct GoogleProvider {
-     client_id: String,
-     client_secret: String,
-+    /// PATCHED: Google requires `redirect_uri` on both the authorize request
-+    /// and the token exchange; upstream sent neither, so every login failed.
-+    redirect_uri: String,
- }
- 
- impl GoogleProvider {
--    /// Create a Google Provider
--    pub fn new(client_id: String, client_secret: String) -> Self {
-+    /// Create a Google Provider. `base_url` is the public site URL (BASE_URL);
-+    /// the callback must be registered in Google Cloud Console exactly as
-+    /// `{base_url}/api/v1/auth/oauth/google/callback`.
-+    pub fn new(client_id: String, client_secret: String, base_url: String) -> Self {
-+        let redirect_uri = format!(
-+            "{}/api/v1/auth/oauth/google/callback",
-+            base_url.trim_end_matches('/')
-+        );
-         Self {
-             client_id,
-             client_secret,
-+            redirect_uri,
+--- a/crates/core/src/services/oauth.rs
++++ b/crates/core/src/services/oauth.rs
+@@ -175,6 +175,16 @@
          }
      }
- }
-@@ -27,8 +37,11 @@ impl OAuthProvider for GoogleProvider {
  
-     fn authorize_url(&self, state: &str, code_challenge: &str) -> String {
-         format!(
--            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&state={}&code_challenge={}&code_challenge_method=S256&scope=openid+email+profile&response_type=code&access_type=offline",
--            self.client_id, state, code_challenge
-+            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=openid+email+profile&response_type=code&access_type=offline",
-+            self.client_id,
-+            urlencoding::encode(&self.redirect_uri),
-+            state,
-+            code_challenge
-         )
++    // PATCHED: SSO sign-up is restricted to the super-admin email list
++    // (`oauth_admin_emails`, verified emails only). Anyone else is refused and
++    // no account is created; existing linked accounts above still sign in.
++    if !is_listed_admin_email(pool, &user_info).await {
++        tracing::warn!("oauth: refused sign-up for a non-listed account");
++        return Err(AppError::BadRequest(
++            "sso_not_authorized: this Google account is not allowed to sign in".into(),
++        ));
++    }
++
+     let user = auto_register_user(pool, provider_name, &user_info, emitter).await?;
+ 
+     do_bind_oauth(pool, user.id, provider_name, &token_resp, &user_info).await?;
+@@ -336,10 +346,19 @@
+     )
+     .await?;
+ 
++    // PATCHED: first-time SSO users whose *verified* email is listed in the
++    // `oauth_admin_emails` option (default tenant; comma/space/newline
++    // separated string or JSON array) are registered as admin instead of reader.
++    let role = if is_listed_admin_email(pool, user_info).await {
++        tracing::info!("oauth: auto-admin for listed email on first login");
++        "admin"
++    } else {
++        "reader"
++    };
+     crate::models::user_role::assign_role_by_name(
+         pool,
+         user.id,
+-        "reader",
++        role,
+         crate::constants::DEFAULT_TENANT,
+     )
+     .await?;
+@@ -369,6 +388,49 @@
+     Ok(user)
+ }
+ 
++/// PATCHED: true when the provider reports a verified email that appears in
++/// the `oauth_admin_emails` option of the default tenant.
++async fn is_listed_admin_email(pool: &crate::db::Pool, user_info: &OAuthUserInfo) -> bool {
++    let Some(email) = user_info.email.as_deref() else {
++        return false;
++    };
++    // Only trust provider-verified emails (Google: `verified_email` /
++    // `email_verified`); an unverified address must never grant admin.
++    let p = &user_info.raw_profile;
++    let verified = p["verified_email"].as_bool() == Some(true)
++        || p["email_verified"].as_bool() == Some(true)
++        || p["email_verified"].as_str() == Some("true");
++    if !verified {
++        return false;
++    }
++    let row = match crate::models::options::find_by_key(
++        pool,
++        "oauth_admin_emails",
++        Some(crate::constants::DEFAULT_TENANT),
++    )
++    .await
++    {
++        Ok(Some(r)) => r,
++        _ => return false,
++    };
++    let listed: Vec<String> = match &row.value {
++        serde_json::Value::Array(items) => items
++            .iter()
++            .filter_map(|v| v.as_str().map(str::to_owned))
++            .collect(),
++        serde_json::Value::String(s) => s
++            .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
++            .map(str::to_owned)
++            .collect(),
++        _ => Vec::new(),
++    };
++    let email = email.trim().to_ascii_lowercase();
++    listed
++        .iter()
++        .map(|e| e.trim().to_ascii_lowercase())
++        .any(|e| !e.is_empty() && e == email)
++}
++
+ /// Ensure username is unique, appending a suffix on collision
+ async fn ensure_unique_username(pool: &crate::db::Pool, base: &str) -> AppResult<String> {
+     let username = sanitize_username(base);
+--- a/crates/core/src/services/tenant.rs
++++ b/crates/core/src/services/tenant.rs
+@@ -57,7 +57,17 @@
+             || serde_json::json!({}),
+             |c| serde_json::to_value(c).unwrap_or_else(|_| serde_json::json!({})),
+         );
+-        crate::models::tenant::create(&self.pool, &req.name, req.domain.as_deref(), &config).await
++        let tenant =
++            crate::models::tenant::create(&self.pool, &req.name, req.domain.as_deref(), &config)
++                .await?;
++        // PATCHED: upstream creates only the tenant row, leaving the new tenant
++        // with no options (empty Options page) and no currencies. Copy the
++        // default tenant's options + currencies. Roles/permissions are global
++        // (looked up by name / role_id without tenant), so they are not copied.
++        if let Err(e) = provision_from_default(&self.pool, &tenant.name).await {
++            tracing::warn!("tenant {}: provisioning from default failed: {e}", tenant.name);
++        }
++        Ok(tenant)
      }
  
-@@ -45,6 +58,7 @@ impl OAuthProvider for GoogleProvider {
-                 "client_secret": self.client_secret,
-                 "code": code,
-                 "code_verifier": code_verifier,
-+                "redirect_uri": self.redirect_uri,
-                 "grant_type": "authorization_code",
-             }))
-             .send()
+     /// Update a tenant
+@@ -107,6 +117,84 @@
+     }
+ }
+ 
++/// PATCHED: copy the default tenant's options and currencies into a newly
++/// created tenant. Each row is copied with `INSERT ... SELECT` keyed by the
++/// source row id (portable SQL; no per-column type binding), with a fresh id.
++/// `oauth_admin_emails` is global (only read from the default tenant), so it is
++/// not copied. The new tenant's `site_title` is set to its name.
++async fn provision_from_default(pool: &crate::db::Pool, tenant: &str) -> Result<(), AppError> {
++    use crate::db::{DbDriver, Driver};
++    let default = crate::constants::DEFAULT_TENANT;
++    if tenant == default {
++        return Ok(());
++    }
++
++    // --- options ---
++    let sql = format!(
++        "SELECT id FROM options WHERE tenant_id = {} AND option_key <> 'oauth_admin_emails'",
++        Driver::ph(1)
++    );
++    let option_ids: Vec<i64> = sqlx::query_scalar(crate::db::safe_sql(&sql))
++        .bind(default)
++        .fetch_all(pool)
++        .await?;
++    let copy_option = format!(
++        "INSERT INTO options (id, tenant_id, option_key, value, type, group_name, label, \
++         description, validation, is_public, autoload, sort_order, updated_at) \
++         SELECT {}, {}, option_key, value, type, group_name, label, description, validation, \
++         is_public, autoload, sort_order, updated_at FROM options WHERE id = {}",
++        Driver::ph(1),
++        Driver::ph(2),
++        Driver::ph(3)
++    );
++    for src in &option_ids {
++        sqlx::query(crate::db::safe_sql(&copy_option))
++            .bind(crate::utils::id::new_id())
++            .bind(tenant)
++            .bind(src)
++            .execute(pool)
++            .await?;
++    }
++    crate::models::options::upsert_value(
++        pool,
++        "site_title",
++        &serde_json::Value::String(tenant.to_owned()),
++        Some(tenant),
++    )
++    .await?;
++
++    // --- currencies ---
++    let sql = format!("SELECT id FROM currencies WHERE tenant_id = {}", Driver::ph(1));
++    let currency_ids: Vec<i64> = sqlx::query_scalar(crate::db::safe_sql(&sql))
++        .bind(default)
++        .fetch_all(pool)
++        .await?;
++    let copy_currency = format!(
++        "INSERT INTO currencies (id, tenant_id, code, name, decimals, is_active, version, \
++         created_at, updated_at) \
++         SELECT {}, {}, code, name, decimals, is_active, 1, created_at, updated_at \
++         FROM currencies WHERE id = {}",
++        Driver::ph(1),
++        Driver::ph(2),
++        Driver::ph(3)
++    );
++    for src in &currency_ids {
++        sqlx::query(crate::db::safe_sql(&copy_currency))
++            .bind(crate::utils::id::new_id())
++            .bind(tenant)
++            .bind(src)
++            .execute(pool)
++            .await?;
++    }
++
++    tracing::info!(
++        "tenant {tenant}: provisioned {} options, {} currencies from default",
++        option_ids.len(),
++        currency_ids.len()
++    );
++    Ok(())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+--- a/crates/core/src/server.rs
++++ b/crates/core/src/server.rs
+@@ -562,9 +562,15 @@
+             state.clone(),
+             crate::middleware::tenant::subdomain_tenant_resolver,
+         ))
+-        .with_state(state);
++        .with_state(state.clone());
+ 
+-    let app = app.route("/api/docs/openapi.json", get(openapi::serve_openapi_json));
++    // PATCHED: the spec is now merged with live runtime state (route registry
++    // + content types), so the handler needs AppState.
++    let docs_state = state;
++    let app = app.route(
++        "/api/docs/openapi.json",
++        get(move || openapi::serve_openapi_json(docs_state.clone())),
++    );
+ 
+     #[cfg(feature = "openapi")]
+     let app = app
+--- a/crates/core/src/server/openapi.rs
++++ b/crates/core/src/server/openapi.rs
+@@ -280,12 +280,305 @@
+ }
+ 
+ /// Serve the OpenAPI JSON specification
+-pub async fn serve_openapi_json() -> Response {
++pub async fn serve_openapi_json(state: crate::AppState) -> Response {
+     let spec = ApiDoc::openapi();
+-    let json = serde_json::to_string_pretty(&spec).unwrap_or_default();
++    let mut doc = serde_json::to_value(&spec).unwrap_or_else(|_| serde_json::json!({}));
++    // PATCHED: the utoipa spec is compile-time only, so it misses (a) routes
++    // registered without a #[utoipa::path] (cart, product categories, variants…)
++    // and (b) every runtime content type (`/api/v1/cms/{group}/{plural}`).
++    // Merge both from live runtime state.
++    dynamic_docs::merge(&mut doc, &state);
++    let json = serde_json::to_string_pretty(&doc).unwrap_or_default();
+     (StatusCode::OK, [("Content-Type", "application/json")], json).into_response()
+ }
+ 
++/// PATCHED: runtime additions to the OpenAPI document.
++mod dynamic_docs {
++    use crate::content_type::schema::{ApiAccess, ContentKind, ContentTypeSchema, FieldType};
++    use serde_json::{Map, Value, json};
++
++    const API: &str = crate::constants::API_PREFIX;
++
++    pub fn merge(doc: &mut Value, state: &crate::AppState) {
++        if !doc["paths"].is_object() {
++            doc["paths"] = json!({});
++        }
++        ensure_security_scheme(doc);
++        add_tenant_header_component(doc);
++        for ct in state.content_type_registry.all() {
++            add_content_type(doc, &ct);
++        }
++        add_registry_routes(doc, state);
++    }
++
++    fn ensure_security_scheme(doc: &mut Value) {
++        let schemes = &mut doc["components"]["securitySchemes"];
++        if schemes.get("bearer_auth").is_none() {
++            schemes["bearer_auth"] = json!({"type": "http", "scheme": "bearer", "bearerFormat": "JWT"});
++        }
++    }
++
++    fn add_tenant_header_component(doc: &mut Value) {
++        doc["components"]["parameters"]["XTenantId"] = json!({
++            "name": "X-Tenant-ID", "in": "header", "required": false,
++            "description": "Tenant (shop) to read/write, e.g. `shop1`. Anonymous callers default to `default`; logged-in non-admin users always use the tenant in their token.",
++            "schema": {"type": "string"}
++        });
++    }
++
++    fn insert_op(doc: &mut Value, path: &str, method: &str, op: Value) {
++        let item = doc["paths"]
++            .as_object_mut()
++            .expect("paths is an object")
++            .entry(path.to_owned())
++            .or_insert_with(|| json!({}));
++        if item.get(method).is_none() {
++            item[method] = op;
++        }
++    }
++
++    fn path_params(path: &str) -> Vec<Value> {
++        path.split('/')
++            .filter_map(|seg| seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
++            .filter(|name| !name.starts_with('*'))
++            .map(|name| json!({"name": name, "in": "path", "required": true, "schema": {"type": "string"}}))
++            .collect()
++    }
++
++    fn security_for(access: ApiAccess) -> Option<Value> {
++        match access {
++            ApiAccess::Public => Some(json!([])),
++            ApiAccess::None => None,
++            _ => Some(json!([{"bearer_auth": []}])),
++        }
++    }
++
++    fn access_note(access: ApiAccess) -> &'static str {
++        match access {
++            ApiAccess::Public => "Public (no login).",
++            ApiAccess::Authed => "Requires login (any role).",
++            ApiAccess::Owner => "Requires login; only the record's creator.",
++            ApiAccess::Admin => "Requires admin.",
++            ApiAccess::None => "Disabled.",
++        }
++    }
++
++    fn field_schema(ft: &FieldType, enum_values: Option<&Vec<String>>) -> Value {
++        match ft {
++            FieldType::Integer | FieldType::BigInt => json!({"type": "integer"}),
++            FieldType::Decimal | FieldType::Float => json!({"type": "number"}),
++            FieldType::Boolean => json!({"type": "boolean"}),
++            FieldType::Date => json!({"type": "string", "format": "date"}),
++            FieldType::DateTime => json!({"type": "string", "format": "date-time"}),
++            FieldType::Email => json!({"type": "string", "format": "email"}),
++            FieldType::Password => json!({"type": "string", "format": "password", "writeOnly": true}),
++            FieldType::Json => json!({"type": "object"}),
++            FieldType::MediaSet => json!({"type": "array", "items": {"type": "string"}}),
++            FieldType::Blob => json!({"type": "string", "format": "binary"}),
++            FieldType::Enum => match enum_values {
++                Some(v) => json!({"type": "string", "enum": v}),
++                None => json!({"type": "string"}),
++            },
++            _ => json!({"type": "string"}),
++        }
++    }
++
++    /// Component schemas `<Name>` (response) and `<Name>Input` (request body).
++    fn add_ct_schemas(doc: &mut Value, ct: &ContentTypeSchema, base: &str) {
++        let mut props = Map::new();
++        let mut input = Map::new();
++        let mut required = Vec::new();
++        props.insert("id".into(), json!({"type": "string"}));
++        for f in &ct.fields {
++            let mut s = field_schema(&f.field_type, f.enum_values.as_ref());
++            if let Some(d) = f.description.as_ref().or(f.label.as_ref()) {
++                s["description"] = json!(d);
++            }
++            if let Some(m) = f.max_length {
++                s["maxLength"] = json!(m);
++            }
++            if !f.private && !matches!(f.field_type, FieldType::Password) {
++                props.insert(f.name.clone(), s.clone());
++            }
++            if !f.immutable {
++                input.insert(f.name.clone(), s);
++                if f.required {
++                    required.push(f.name.clone());
++                }
++            }
++        }
++        if ct.implements.iter().any(|p| p.name() == "statusable") {
++            props.insert("status".into(), json!({"type": "string"}));
++            input.insert("status".into(), json!({"type": "string"}));
++        }
++        if ct.implements.iter().any(|p| p.name() == "timestampable") {
++            props.insert("created_at".into(), json!({"type": "string", "format": "date-time"}));
++            props.insert("updated_at".into(), json!({"type": "string", "format": "date-time"}));
++        }
++        let schemas = &mut doc["components"]["schemas"];
++        schemas[base] = json!({"type": "object", "properties": props});
++        schemas[format!("{base}Input")] =
++            json!({"type": "object", "properties": input, "required": required});
++    }
++
++    fn ok_body(data: Value) -> Value {
++        json!({"200": {"description": "Success", "content": {"application/json": {"schema": {
++            "type": "object",
++            "properties": {"code": {"type": "integer", "example": 0}, "message": {"type": "string"}, "data": data}
++        }}}}})
++    }
++
++    fn add_content_type(doc: &mut Value, ct: &ContentTypeSchema) {
++        let base: String = ct
++            .singular
++            .split(['_', '-'])
++            .map(|w| {
++                let mut c = w.chars();
++                c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
++            })
++            .collect();
++        let base = format!("Cms{base}");
++        add_ct_schemas(doc, ct, &base);
++        let item_ref = json!({"$ref": format!("#/components/schemas/{base}")});
++        let input_ref = json!({"$ref": format!("#/components/schemas/{base}Input")});
++        let list_data = json!({"type": "object", "properties": {
++            "items": {"type": "array", "items": item_ref},
++            "total": {"type": "integer"}, "page": {"type": "integer"}, "page_size": {"type": "integer"}}});
++        let tag = format!("CMS: {}", ct.name);
++        let tenant = ct.implements.iter().any(|p| p.name() == "tenantable");
++        let tenant_note = if tenant {
++            " Data is per tenant: send `X-Tenant-ID`."
++        } else {
++            " Not tenant-scoped: records are shared by all tenants."
++        };
++        let group = if ct.group.is_empty() { String::new() } else { format!("/{}", ct.group) };
++        let header = json!({"$ref": "#/components/parameters/XTenantId"});
++        let list_params = vec![
++            header.clone(),
++            json!({"name": "page", "in": "query", "schema": {"type": "integer"}}),
++            json!({"name": "page_size", "in": "query", "schema": {"type": "integer"}}),
++            json!({"name": "sort", "in": "query", "description": "Field name; prefix `-` for descending", "schema": {"type": "string"}}),
++            json!({"name": "status", "in": "query", "schema": {"type": "string"}}),
++            json!({"name": "search", "in": "query", "schema": {"type": "string"}}),
++            json!({"name": "filter", "in": "query", "description": "Rule expression, e.g. `status = \"published\"`", "schema": {"type": "string"}}),
++            json!({"name": "include", "in": "query", "description": "Relations to expand (comma separated)", "schema": {"type": "string"}}),
++        ];
++
++        let op = |summary: String, access: ApiAccess, params: Vec<Value>, body: Option<&Value>, data: Value| -> Option<Value> {
++            let security = security_for(access)?;
++            let mut o = json!({
++                "tags": [tag.clone()],
++                "summary": summary,
++                "description": format!("{}{}", access_note(access), tenant_note),
++                "parameters": params,
++                "security": security,
++                "responses": ok_body(data),
++            });
++            if let Some(b) = body {
++                o["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": b}}});
++            }
++            Some(o)
++        };
++
++        if ct.kind == ContentKind::Single {
++            let p = format!("{API}/cms{group}/{}", ct.singular);
++            if let Some(o) = op(format!("Get {}", ct.name), ct.api.get.access, vec![header.clone()], None, item_ref.clone()) {
++                insert_op(doc, &p, "get", o);
++            }
++            if let Some(o) = op(format!("Update {}", ct.name), ct.api.update.access, vec![header.clone()], Some(&input_ref), item_ref.clone()) {
++                insert_op(doc, &p, "put", o);
++            }
++            return;
++        }
++
++        let coll = format!("{API}/cms{group}/{}", ct.plural);
++        let one = format!("{coll}/{{id}}");
++        let mut id_params = path_params(&one);
++        id_params.insert(0, header.clone());
++        if let Some(o) = op(format!("List {}", ct.name), ct.api.list.access, list_params, None, list_data.clone()) {
++            insert_op(doc, &coll, "get", o);
++        }
++        if let Some(o) = op(format!("Create {}", ct.name), ct.api.create.access, vec![header.clone()], Some(&input_ref), item_ref.clone()) {
++            insert_op(doc, &coll, "post", o);
++        }
++        if let Some(o) = op(format!("Get one {}", ct.name), ct.api.get.access, id_params.clone(), None, item_ref.clone()) {
++            insert_op(doc, &one, "get", o);
++        }
++        if let Some(o) = op(format!("Update {}", ct.name), ct.api.update.access, id_params.clone(), Some(&input_ref), item_ref.clone()) {
++            insert_op(doc, &one, "put", o);
++        }
++        if let Some(o) = op(format!("Delete {}", ct.name), ct.api.delete.access, id_params, None, json!(null)) {
++            insert_op(doc, &one, "delete", o);
++        }
++
++        // Admin CMS endpoints (no access rules / filters; admin only)
++        let admin_tag = format!("CMS (admin): {}", ct.name);
++        let admin_coll = format!("{API}/admin/cms{group}/{}", ct.plural);
++        let admin_one = format!("{admin_coll}/{{id}}");
++        let sec = json!([{"bearer_auth": []}]);
++        let mk = |summary: &str, params: Vec<Value>, body: Option<&Value>, data: Value| {
++            let mut o = json!({"tags": [admin_tag.clone()], "summary": summary, "parameters": params,
++                "security": sec.clone(), "responses": ok_body(data)});
++            if let Some(b) = body {
++                o["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": b}}});
++            }
++            o
++        };
++        let mut admin_id = path_params(&admin_one);
++        admin_id.insert(0, header.clone());
++        insert_op(doc, &admin_coll, "get", mk(&format!("Admin list {}", ct.name), vec![header.clone()], None, list_data));
++        insert_op(doc, &admin_coll, "post", mk(&format!("Admin create {}", ct.name), vec![header.clone()], Some(&input_ref), item_ref.clone()));
++        insert_op(doc, &admin_one, "get", mk(&format!("Admin get {}", ct.name), admin_id.clone(), None, item_ref.clone()));
++        insert_op(doc, &admin_one, "put", mk(&format!("Admin update {}", ct.name), admin_id.clone(), Some(&input_ref), item_ref));
++        insert_op(doc, &admin_one, "delete", mk(&format!("Admin delete {}", ct.name), admin_id, None, json!(null)));
++    }
++
++    /// Routes known to the runtime route registry but absent from the
++    /// compile-time spec (e.g. cart, product categories, variants).
++    fn add_registry_routes(doc: &mut Value, state: &crate::AppState) {
++        for r in state.route_registry.iter() {
++            if r.path.contains("{*") || !r.path.starts_with(API) {
++                continue; // catch-alls are expanded per content type above
++            }
++            let method = r.method.to_ascii_lowercase();
++            if !["get", "post", "put", "delete", "patch"].contains(&method.as_str()) {
++                continue;
++            }
++            let exists = doc["paths"].get(&r.path).and_then(|p| p.get(&method)).is_some();
++            if exists {
++                continue;
++            }
++            let (security, note) = match r.permission.as_deref() {
++                Some("public") => (json!([]), "Public."),
++                Some("admin") => (json!([{"bearer_auth": []}]), "Requires admin."),
++                Some("authed") => (json!([{"bearer_auth": []}]), "Requires login."),
++                Some(_) => (json!([{"bearer_auth": []}]), "Requires login / API token scope."),
++                None if r.path.contains("/admin/") => (json!([{"bearer_auth": []}]), "Requires admin."),
++                None => (json!([]), "Access decided by the handler (login may be required)."),
++            };
++            let mut params = path_params(&r.path);
++            params.insert(0, json!({"$ref": "#/components/parameters/XTenantId"}));
++            let mut op = json!({
++                "tags": [if r.source_name.is_empty() { r.source.clone() } else { r.source_name.clone() }],
++                "summary": format!("{} {}", r.method, r.path.trim_start_matches(API)),
++                "description": format!("{note} (Auto-documented from the live route table; request/response schema not annotated upstream.)"),
++                "parameters": params,
++                "security": security,
++                "responses": {"200": {"description": "Success"}},
++            });
++            if matches!(method.as_str(), "post" | "put" | "patch") {
++                op["requestBody"] = json!({"content": {"application/json": {"schema": {"type": "object"}}}});
++            }
++            let item = doc["paths"]
++                .as_object_mut()
++                .expect("paths is an object")
++                .entry(r.path.clone())
++                .or_insert_with(|| json!({}));
++            item[method] = op;
++        }
++    }
++}
++
+ /// Serve Scalar API documentation UI (only compiled when `openapi` feature is enabled)
+ #[cfg(feature = "openapi")]
+ pub async fn serve_scalar_ui() -> impl IntoResponse {
+--- a/crates/core/src/content_type/handler.rs
++++ b/crates/core/src/content_type/handler.rs
+@@ -898,7 +898,7 @@
+     } else {
+         match (method.clone(), id) {
+             (axum::http::Method::GET, None) => {
+-                let data = do_admin_list(state, &ct, params).await?;
++                let data = do_admin_list(state, &ct, params, auth.tenant_id()).await?;
+                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
+             }
+             (axum::http::Method::GET, Some(id)) if id == "export" => {
+@@ -914,7 +914,7 @@
+             }
+             (axum::http::Method::GET, Some(id)) => {
+                 let int_id = crate::types::snowflake_id::parse_id(&id)?;
+-                let data = do_admin_get(state, &ct, int_id).await?;
++                let data = do_admin_get(state, &ct, int_id, auth.tenant_id()).await?;
+                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
+             }
+             (axum::http::Method::POST, None) => {
+@@ -1008,7 +1008,7 @@
+     } else {
+         match (method.clone(), id) {
+             (axum::http::Method::GET, None) => {
+-                let data = do_admin_list(state, &ct, params).await?;
++                let data = do_admin_list(state, &ct, params, auth.tenant_id()).await?;
+                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
+             }
+             (axum::http::Method::GET, Some(id)) if id == "export" => {
+@@ -1024,7 +1024,7 @@
+             }
+             (axum::http::Method::GET, Some(id)) => {
+                 let int_id = crate::types::snowflake_id::parse_id(&id)?;
+-                let data = do_admin_get(state, &ct, int_id).await?;
++                let data = do_admin_get(state, &ct, int_id, auth.tenant_id()).await?;
+                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
+             }
+             (axum::http::Method::POST, Some(id)) if id == "batch" => {
+@@ -1103,6 +1103,9 @@
+     use std::hash::{Hash, Hasher};
+ 
+     let mut hasher = DefaultHasher::new();
++    // PATCHED: tenant must be part of the key, or one tenant's cached list is
++    // served to another once tenant filtering is applied.
++    query.tenant_id.hash(&mut hasher);
+     query.page.hash(&mut hasher);
+     query.page_size.hash(&mut hasher);
+     query.search.hash(&mut hasher);
+@@ -1197,7 +1200,7 @@
+         filters,
+         search: params.search,
+         fields: ct.api.list.fields.clone(),
+-        tenant_id: None,
++        tenant_id: auth.tenant_id().map(str::to_owned), // PATCHED: was None (always "default")
+         include,
+         skip_total: params.skip_total.unwrap_or(false),
+         rule_where,
+@@ -1242,7 +1245,13 @@
+     auth: &AuthUser,
+ ) -> Result<serde_json::Value, AppError> {
+     auth.ensure_scope(&ct.scope(), TokenAction::Read)?;
+-    let cache_key = cms_detail_cache_key(ct, id);
++    // PATCHED: tenant-qualified so a record cached for one tenant is never
++    // served to another (prefix `cms:{scope}:` still matches for invalidation).
++    let cache_key = format!(
++        "{}:t:{}",
++        cms_detail_cache_key(ct, id),
++        auth.tenant_id().unwrap_or(DEFAULT_TENANT)
++    );
+     let cache_ttl = std::time::Duration::from_secs(state.config.rule_engine.cms_cache_ttl_secs);
+     if ct.api.get.cache
+         && let Some(entry) = state.cms_cache.get(&cache_key)
+@@ -1252,7 +1261,7 @@
+     }
+ 
+     let repo = ContentRepository::new(state.pool.clone());
+-    let item = repo.find_by_id(ct, id, None, false).await?;
++    let item = repo.find_by_id(ct, id, auth.tenant_id(), false).await?;
+     let result = item.ok_or_else(|| AppError::not_found(&format!("{}/{}", ct.name, id)))?;
+ 
+     if let Some(rules) = ct.cached_rules.as_ref()
+@@ -1329,7 +1338,7 @@
+     }
+ 
+     let repo = ContentRepository::new(state.pool.clone());
+-    let result = repo.create(ct, data, None, save_ctx).await?;
++    let result = repo.create(ct, data, save_ctx.tenant_id.as_deref(), save_ctx).await?;
+     invalidate_cms_cache(state, ct);
+ 
+     let id = result
+@@ -1368,7 +1377,7 @@
+     auth.ensure_scope(&ct.scope(), TokenAction::Update)?;
+     let repo = ContentRepository::new(state.pool.clone());
+ 
+-    let old_record_value = repo.find_by_id(ct, id, None, true).await?;
++    let old_record_value = repo.find_by_id(ct, id, save_ctx.tenant_id.as_deref(), true).await?;
+ 
+     if ct.api.update.access == ApiAccess::Owner {
+         let rec = old_record_value
+@@ -1429,7 +1438,7 @@
+         data = Value::Object(new_record);
+     }
+ 
+-    let result = repo.update(ct, id, data, None, save_ctx).await?;
++    let result = repo.update(ct, id, data, save_ctx.tenant_id.as_deref(), save_ctx).await?;
+     invalidate_cms_cache(state, ct);
+ 
+     state
+@@ -1455,7 +1464,7 @@
+     auth.ensure_scope(&ct.scope(), TokenAction::Delete)?;
+     let repo = ContentRepository::new(state.pool.clone());
+ 
+-    let existing = repo.find_by_id(ct, id, None, true).await?;
++    let existing = repo.find_by_id(ct, id, auth.tenant_id(), true).await?;
+     let value = existing.ok_or_else(|| AppError::not_found(&ct.singular))?;
+ 
+     // Owner access: only the creator may delete
+@@ -1542,6 +1551,7 @@
+     state: &AppState,
+     ct: &ContentTypeSchema,
+     params: ListParams,
++    tenant_id: Option<&str>,
+ ) -> Result<serde_json::Value, AppError> {
+     let repo = ContentRepository::new(state.pool.clone());
+     let include = params.include.as_deref().map(parse_include);
+@@ -1575,7 +1585,7 @@
+         filters,
+         search: params.search,
+         fields: None,
+-        tenant_id: None,
++        tenant_id: tenant_id.map(str::to_owned), // PATCHED: was None
+         include,
+         skip_total: params.skip_total.unwrap_or(false),
+         rule_where,
+@@ -1597,9 +1607,10 @@
+     state: &AppState,
+     ct: &ContentTypeSchema,
+     id: SnowflakeId,
++    tenant_id: Option<&str>,
+ ) -> Result<serde_json::Value, AppError> {
+     let repo = ContentRepository::new(state.pool.clone());
+-    let item = repo.find_by_id(ct, id, None, true).await?;
++    let item = repo.find_by_id(ct, id, tenant_id, true).await?;
+     item.ok_or_else(|| AppError::not_found(&format!("{}/{}", ct.name, id)))
+ }
+ 
+@@ -1808,7 +1819,7 @@
+         .content_type_registry
+         .get(&type_name)
+         .ok_or_else(|| AppError::not_found(&type_name))?;
+-    let data = do_admin_list(&state, &ct, params).await?;
++    let data = do_admin_list(&state, &ct, params, auth.tenant_id()).await?;
+     Ok(Json(crate::errors::response::ApiResponse::success(data)))
+ }
+ 
+@@ -1824,7 +1835,7 @@
+         .get(&type_name)
+         .ok_or_else(|| AppError::not_found(&type_name))?;
+     let int_id = crate::types::snowflake_id::parse_id(&id)?;
+-    let data = do_admin_get(&state, &ct, int_id).await?;
++    let data = do_admin_get(&state, &ct, int_id, auth.tenant_id()).await?;
+     Ok(Json(crate::errors::response::ApiResponse::success(data)))
+ }
+ 
+@@ -2330,6 +2341,28 @@
+     }
+ 
+     let dir = std::path::Path::new(&state.config.content_type_dir);
++
++    // PATCHED: apply a group change. The group is part of the registry key,
++    // the TOML file name and the public URL (/api/v1/cms/{group}/{plural}), so
++    // the old registration and file must be retired. The table is unchanged,
++    // so existing records are kept.
++    let old_key = ct.registry_key();
++    let old_file = dir.join(ct.toml_filename());
++    let mut group_changed = false;
++    if let Some(group) = req.group {
++        let group = super::schema::ContentTypeSchema::validate_group_name(group.trim())?;
++        if group != updated.group {
++            let new_key = super::schema::ContentTypeSchema::make_key(&group, &updated.singular);
++            if state.content_type_registry.get(&new_key).is_some() {
++                return Err(AppError::Conflict(format!(
++                    "a content type '{new_key}' already exists"
++                )));
++            }
++            updated.group = group;
++            group_changed = true;
++        }
++    }
++
+     updated.save_to_dir(dir)?;
+ 
+     state
+@@ -2341,16 +2374,44 @@
+ 
+     let reserved = state.config.builtins.reserved_route_segments();
+     let protocol_names: Vec<&str> = state.protocol_registry.names();
+-    state
+-        .content_type_registry
+-        .register(
+-            updated.clone(),
+-            &state.config.rule_engine,
+-            &reserved,
+-            &protocol_names,
+-            &state.protocol_registry,
+-        )
+-        .map_err(|e| AppError::Conflict(e.to_string()))?;
++    // Same table/plural would conflict with the old registration: retire it
++    // first, and restore it if the new registration is rejected.
++    let previous = if group_changed {
++        state.content_type_registry.unregister(&old_key)
++    } else {
++        None
++    };
++    if let Err(e) = state.content_type_registry.register(
++        updated.clone(),
++        &state.config.rule_engine,
++        &reserved,
++        &protocol_names,
++        &state.protocol_registry,
++    ) {
++        if let Some(prev) = previous {
++            let _ = std::fs::remove_file(dir.join(updated.toml_filename()));
++            let _ = prev.save_to_dir(dir);
++            let _ = state.content_type_registry.register(
++                (*prev).clone(),
++                &state.config.rule_engine,
++                &reserved,
++                &protocol_names,
++                &state.protocol_registry,
++            );
++        }
++        return Err(AppError::Conflict(e.to_string()));
++    }
++    if group_changed && old_file != dir.join(updated.toml_filename()) {
++        if let Err(e) = std::fs::remove_file(&old_file) {
++            tracing::warn!("content type group change: could not remove {old_file:?}: {e}");
++        }
++        tracing::info!(
++            "content type moved: {old_key} -> {} (URL now /api/v1/cms/{}/{})",
++            updated.registry_key(),
++            updated.group,
++            updated.plural
++        );
++    }
+ 
+     tracing::info!(
+         "updated content type: {} (table={}, hot-reload)",
+--- a/crates/core/src/content_type/schema.rs
++++ b/crates/core/src/content_type/schema.rs
+@@ -1480,6 +1480,10 @@
+ pub struct UpdateContentTypeRequest {
+     #[serde(default)]
+     pub name: Option<String>,
++    /// PATCHED: the admin UI sends `group` on save, but upstream had no such
++    /// field, so it was silently dropped while the API still reported success.
++    #[serde(default)]
++    pub group: Option<String>,
+     #[serde(default)]
+     pub description: Option<String>,
+     #[serde(default)]

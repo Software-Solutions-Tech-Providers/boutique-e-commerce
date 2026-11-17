@@ -1480,6 +1480,10 @@ fn default_create_implements() -> Vec<ProtocolRef> {
 pub struct UpdateContentTypeRequest {
     #[serde(default)]
     pub name: Option<String>,
+    /// PATCHED: the admin UI sends `group` on save, but upstream had no such
+    /// field, so it was silently dropped while the API still reported success.
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]

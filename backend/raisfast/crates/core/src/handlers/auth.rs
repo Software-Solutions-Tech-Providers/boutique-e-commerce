@@ -246,6 +246,15 @@ pub async fn register(
         ));
     }
     validation::validate(&req)?;
+    // PATCHED: the default tenant is the platform tenant (super admins only).
+    // Self-registration must target a shop via X-Tenant-ID; only an admin may
+    // create accounts in default.
+    let target = auth.tenant_id().unwrap_or(crate::constants::DEFAULT_TENANT);
+    if target == crate::constants::DEFAULT_TENANT && !auth.is_admin() {
+        return Err(crate::errors::app_error::AppError::BadRequest(
+            "registration_requires_tenant: sign up within a shop (X-Tenant-ID)".into(),
+        ));
+    }
     let user = auth::register(
         &state.emitter,
         req,

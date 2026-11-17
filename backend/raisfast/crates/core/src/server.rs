@@ -562,9 +562,15 @@ async fn build_app(
             state.clone(),
             crate::middleware::tenant::subdomain_tenant_resolver,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
-    let app = app.route("/api/docs/openapi.json", get(openapi::serve_openapi_json));
+    // PATCHED: the spec is now merged with live runtime state (route registry
+    // + content types), so the handler needs AppState.
+    let docs_state = state;
+    let app = app.route(
+        "/api/docs/openapi.json",
+        get(move || openapi::serve_openapi_json(docs_state.clone())),
+    );
 
     #[cfg(feature = "openapi")]
     let app = app

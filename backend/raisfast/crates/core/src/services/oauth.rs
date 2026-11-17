@@ -175,6 +175,16 @@ pub async fn handle_callback(
         }
     }
 
+    // PATCHED: SSO sign-up is restricted to the super-admin email list
+    // (`oauth_admin_emails`, verified emails only). Anyone else is refused and
+    // no account is created; existing linked accounts above still sign in.
+    if !is_listed_admin_email(pool, &user_info).await {
+        tracing::warn!("oauth: refused sign-up for a non-listed account");
+        return Err(AppError::BadRequest(
+            "sso_not_authorized: this Google account is not allowed to sign in".into(),
+        ));
+    }
+
     let user = auto_register_user(pool, provider_name, &user_info, emitter).await?;
 
     do_bind_oauth(pool, user.id, provider_name, &token_resp, &user_info).await?;
@@ -336,10 +346,19 @@ async fn auto_register_user(
     )
     .await?;
 
+    // PATCHED: first-time SSO users whose *verified* email is listed in the
+    // `oauth_admin_emails` option (default tenant; comma/space/newline
+    // separated string or JSON array) are registered as admin instead of reader.
+    let role = if is_listed_admin_email(pool, user_info).await {
+        tracing::info!("oauth: auto-admin for listed email on first login");
+        "admin"
+    } else {
+        "reader"
+    };
     crate::models::user_role::assign_role_by_name(
         pool,
         user.id,
-        "reader",
+        role,
         crate::constants::DEFAULT_TENANT,
     )
     .await?;
@@ -367,6 +386,49 @@ async fn auto_register_user(
     emitter.emit(Event::UserRegistered(user.clone()));
 
     Ok(user)
+}
+
+/// PATCHED: true when the provider reports a verified email that appears in
+/// the `oauth_admin_emails` option of the default tenant.
+async fn is_listed_admin_email(pool: &crate::db::Pool, user_info: &OAuthUserInfo) -> bool {
+    let Some(email) = user_info.email.as_deref() else {
+        return false;
+    };
+    // Only trust provider-verified emails (Google: `verified_email` /
+    // `email_verified`); an unverified address must never grant admin.
+    let p = &user_info.raw_profile;
+    let verified = p["verified_email"].as_bool() == Some(true)
+        || p["email_verified"].as_bool() == Some(true)
+        || p["email_verified"].as_str() == Some("true");
+    if !verified {
+        return false;
+    }
+    let row = match crate::models::options::find_by_key(
+        pool,
+        "oauth_admin_emails",
+        Some(crate::constants::DEFAULT_TENANT),
+    )
+    .await
+    {
+        Ok(Some(r)) => r,
+        _ => return false,
+    };
+    let listed: Vec<String> = match &row.value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        serde_json::Value::String(s) => s
+            .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let email = email.trim().to_ascii_lowercase();
+    listed
+        .iter()
+        .map(|e| e.trim().to_ascii_lowercase())
+        .any(|e| !e.is_empty() && e == email)
 }
 
 /// Ensure username is unique, appending a suffix on collision

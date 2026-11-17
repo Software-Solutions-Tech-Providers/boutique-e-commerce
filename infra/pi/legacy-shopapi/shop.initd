@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+name="shop"
+supervisor="supervise-daemon"
+command="/opt/shop/current/shopapi"
+command_user="shop:nogroup"
+directory="/var/lib/shop"
+output_log="/var/log/shop/shop.log"
+error_log="/var/log/shop/shop.log"
+respawn_delay=2
+respawn_max=0
+depend() {
+    need net
+}

@@ -898,7 +898,7 @@ async fn dynamic_admin_cms_dispatch_restful(
     } else {
         match (method.clone(), id) {
             (axum::http::Method::GET, None) => {
-                let data = do_admin_list(state, &ct, params).await?;
+                let data = do_admin_list(state, &ct, params, auth.tenant_id()).await?;
                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
             }
             (axum::http::Method::GET, Some(id)) if id == "export" => {
@@ -914,7 +914,7 @@ async fn dynamic_admin_cms_dispatch_restful(
             }
             (axum::http::Method::GET, Some(id)) => {
                 let int_id = crate::types::snowflake_id::parse_id(&id)?;
-                let data = do_admin_get(state, &ct, int_id).await?;
+                let data = do_admin_get(state, &ct, int_id, auth.tenant_id()).await?;
                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
             }
             (axum::http::Method::POST, None) => {
@@ -1008,7 +1008,7 @@ async fn dynamic_admin_cms_dispatch_simple(
     } else {
         match (method.clone(), id) {
             (axum::http::Method::GET, None) => {
-                let data = do_admin_list(state, &ct, params).await?;
+                let data = do_admin_list(state, &ct, params, auth.tenant_id()).await?;
                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
             }
             (axum::http::Method::GET, Some(id)) if id == "export" => {
@@ -1024,7 +1024,7 @@ async fn dynamic_admin_cms_dispatch_simple(
             }
             (axum::http::Method::GET, Some(id)) => {
                 let int_id = crate::types::snowflake_id::parse_id(&id)?;
-                let data = do_admin_get(state, &ct, int_id).await?;
+                let data = do_admin_get(state, &ct, int_id, auth.tenant_id()).await?;
                 Ok(Json(crate::errors::response::ApiResponse::success(data)).into_response())
             }
             (axum::http::Method::POST, Some(id)) if id == "batch" => {
@@ -1103,6 +1103,9 @@ pub fn cms_list_cache_key(ct: &ContentTypeSchema, query: &ContentQuery) -> Strin
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
+    // PATCHED: tenant must be part of the key, or one tenant's cached list is
+    // served to another once tenant filtering is applied.
+    query.tenant_id.hash(&mut hasher);
     query.page.hash(&mut hasher);
     query.page_size.hash(&mut hasher);
     query.search.hash(&mut hasher);
@@ -1197,7 +1200,7 @@ pub async fn do_list(
         filters,
         search: params.search,
         fields: ct.api.list.fields.clone(),
-        tenant_id: None,
+        tenant_id: auth.tenant_id().map(str::to_owned), // PATCHED: was None (always "default")
         include,
         skip_total: params.skip_total.unwrap_or(false),
         rule_where,
@@ -1242,7 +1245,13 @@ pub async fn do_get(
     auth: &AuthUser,
 ) -> Result<serde_json::Value, AppError> {
     auth.ensure_scope(&ct.scope(), TokenAction::Read)?;
-    let cache_key = cms_detail_cache_key(ct, id);
+    // PATCHED: tenant-qualified so a record cached for one tenant is never
+    // served to another (prefix `cms:{scope}:` still matches for invalidation).
+    let cache_key = format!(
+        "{}:t:{}",
+        cms_detail_cache_key(ct, id),
+        auth.tenant_id().unwrap_or(DEFAULT_TENANT)
+    );
     let cache_ttl = std::time::Duration::from_secs(state.config.rule_engine.cms_cache_ttl_secs);
     if ct.api.get.cache
         && let Some(entry) = state.cms_cache.get(&cache_key)
@@ -1252,7 +1261,7 @@ pub async fn do_get(
     }
 
     let repo = ContentRepository::new(state.pool.clone());
-    let item = repo.find_by_id(ct, id, None, false).await?;
+    let item = repo.find_by_id(ct, id, auth.tenant_id(), false).await?;
     let result = item.ok_or_else(|| AppError::not_found(&format!("{}/{}", ct.name, id)))?;
 
     if let Some(rules) = ct.cached_rules.as_ref()
@@ -1329,7 +1338,7 @@ pub async fn do_create(
     }
 
     let repo = ContentRepository::new(state.pool.clone());
-    let result = repo.create(ct, data, None, save_ctx).await?;
+    let result = repo.create(ct, data, save_ctx.tenant_id.as_deref(), save_ctx).await?;
     invalidate_cms_cache(state, ct);
 
     let id = result
@@ -1368,7 +1377,7 @@ pub async fn do_update(
     auth.ensure_scope(&ct.scope(), TokenAction::Update)?;
     let repo = ContentRepository::new(state.pool.clone());
 
-    let old_record_value = repo.find_by_id(ct, id, None, true).await?;
+    let old_record_value = repo.find_by_id(ct, id, save_ctx.tenant_id.as_deref(), true).await?;
 
     if ct.api.update.access == ApiAccess::Owner {
         let rec = old_record_value
@@ -1429,7 +1438,7 @@ pub async fn do_update(
         data = Value::Object(new_record);
     }
 
-    let result = repo.update(ct, id, data, None, save_ctx).await?;
+    let result = repo.update(ct, id, data, save_ctx.tenant_id.as_deref(), save_ctx).await?;
     invalidate_cms_cache(state, ct);
 
     state
@@ -1455,7 +1464,7 @@ pub async fn do_delete(
     auth.ensure_scope(&ct.scope(), TokenAction::Delete)?;
     let repo = ContentRepository::new(state.pool.clone());
 
-    let existing = repo.find_by_id(ct, id, None, true).await?;
+    let existing = repo.find_by_id(ct, id, auth.tenant_id(), true).await?;
     let value = existing.ok_or_else(|| AppError::not_found(&ct.singular))?;
 
     // Owner access: only the creator may delete
@@ -1542,6 +1551,7 @@ async fn do_admin_list(
     state: &AppState,
     ct: &ContentTypeSchema,
     params: ListParams,
+    tenant_id: Option<&str>,
 ) -> Result<serde_json::Value, AppError> {
     let repo = ContentRepository::new(state.pool.clone());
     let include = params.include.as_deref().map(parse_include);
@@ -1575,7 +1585,7 @@ async fn do_admin_list(
         filters,
         search: params.search,
         fields: None,
-        tenant_id: None,
+        tenant_id: tenant_id.map(str::to_owned), // PATCHED: was None
         include,
         skip_total: params.skip_total.unwrap_or(false),
         rule_where,
@@ -1597,9 +1607,10 @@ async fn do_admin_get(
     state: &AppState,
     ct: &ContentTypeSchema,
     id: SnowflakeId,
+    tenant_id: Option<&str>,
 ) -> Result<serde_json::Value, AppError> {
     let repo = ContentRepository::new(state.pool.clone());
-    let item = repo.find_by_id(ct, id, None, true).await?;
+    let item = repo.find_by_id(ct, id, tenant_id, true).await?;
     item.ok_or_else(|| AppError::not_found(&format!("{}/{}", ct.name, id)))
 }
 
@@ -1808,7 +1819,7 @@ async fn admin_list_handler(
         .content_type_registry
         .get(&type_name)
         .ok_or_else(|| AppError::not_found(&type_name))?;
-    let data = do_admin_list(&state, &ct, params).await?;
+    let data = do_admin_list(&state, &ct, params, auth.tenant_id()).await?;
     Ok(Json(crate::errors::response::ApiResponse::success(data)))
 }
 
@@ -1824,7 +1835,7 @@ async fn admin_get_handler(
         .get(&type_name)
         .ok_or_else(|| AppError::not_found(&type_name))?;
     let int_id = crate::types::snowflake_id::parse_id(&id)?;
-    let data = do_admin_get(&state, &ct, int_id).await?;
+    let data = do_admin_get(&state, &ct, int_id, auth.tenant_id()).await?;
     Ok(Json(crate::errors::response::ApiResponse::success(data)))
 }
 
@@ -2330,6 +2341,28 @@ pub async fn update_schema(
     }
 
     let dir = std::path::Path::new(&state.config.content_type_dir);
+
+    // PATCHED: apply a group change. The group is part of the registry key,
+    // the TOML file name and the public URL (/api/v1/cms/{group}/{plural}), so
+    // the old registration and file must be retired. The table is unchanged,
+    // so existing records are kept.
+    let old_key = ct.registry_key();
+    let old_file = dir.join(ct.toml_filename());
+    let mut group_changed = false;
+    if let Some(group) = req.group {
+        let group = super::schema::ContentTypeSchema::validate_group_name(group.trim())?;
+        if group != updated.group {
+            let new_key = super::schema::ContentTypeSchema::make_key(&group, &updated.singular);
+            if state.content_type_registry.get(&new_key).is_some() {
+                return Err(AppError::Conflict(format!(
+                    "a content type '{new_key}' already exists"
+                )));
+            }
+            updated.group = group;
+            group_changed = true;
+        }
+    }
+
     updated.save_to_dir(dir)?;
 
     state
@@ -2341,16 +2374,44 @@ pub async fn update_schema(
 
     let reserved = state.config.builtins.reserved_route_segments();
     let protocol_names: Vec<&str> = state.protocol_registry.names();
-    state
-        .content_type_registry
-        .register(
-            updated.clone(),
-            &state.config.rule_engine,
-            &reserved,
-            &protocol_names,
-            &state.protocol_registry,
-        )
-        .map_err(|e| AppError::Conflict(e.to_string()))?;
+    // Same table/plural would conflict with the old registration: retire it
+    // first, and restore it if the new registration is rejected.
+    let previous = if group_changed {
+        state.content_type_registry.unregister(&old_key)
+    } else {
+        None
+    };
+    if let Err(e) = state.content_type_registry.register(
+        updated.clone(),
+        &state.config.rule_engine,
+        &reserved,
+        &protocol_names,
+        &state.protocol_registry,
+    ) {
+        if let Some(prev) = previous {
+            let _ = std::fs::remove_file(dir.join(updated.toml_filename()));
+            let _ = prev.save_to_dir(dir);
+            let _ = state.content_type_registry.register(
+                (*prev).clone(),
+                &state.config.rule_engine,
+                &reserved,
+                &protocol_names,
+                &state.protocol_registry,
+            );
+        }
+        return Err(AppError::Conflict(e.to_string()));
+    }
+    if group_changed && old_file != dir.join(updated.toml_filename()) {
+        if let Err(e) = std::fs::remove_file(&old_file) {
+            tracing::warn!("content type group change: could not remove {old_file:?}: {e}");
+        }
+        tracing::info!(
+            "content type moved: {old_key} -> {} (URL now /api/v1/cms/{}/{})",
+            updated.registry_key(),
+            updated.group,
+            updated.plural
+        );
+    }
 
     tracing::info!(
         "updated content type: {} (table={}, hot-reload)",

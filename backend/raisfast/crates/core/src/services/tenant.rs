@@ -57,7 +57,17 @@ impl TenantService {
             || serde_json::json!({}),
             |c| serde_json::to_value(c).unwrap_or_else(|_| serde_json::json!({})),
         );
-        crate::models::tenant::create(&self.pool, &req.name, req.domain.as_deref(), &config).await
+        let tenant =
+            crate::models::tenant::create(&self.pool, &req.name, req.domain.as_deref(), &config)
+                .await?;
+        // PATCHED: upstream creates only the tenant row, leaving the new tenant
+        // with no options (empty Options page) and no currencies. Copy the
+        // default tenant's options + currencies. Roles/permissions are global
+        // (looked up by name / role_id without tenant), so they are not copied.
+        if let Err(e) = provision_from_default(&self.pool, &tenant.name).await {
+            tracing::warn!("tenant {}: provisioning from default failed: {e}", tenant.name);
+        }
+        Ok(tenant)
     }
 
     /// Update a tenant
@@ -105,6 +115,84 @@ impl TenantService {
             None => Err(AppError::not_found(&format!("tenant/{int_id}"))),
         }
     }
+}
+
+/// PATCHED: copy the default tenant's options and currencies into a newly
+/// created tenant. Each row is copied with `INSERT ... SELECT` keyed by the
+/// source row id (portable SQL; no per-column type binding), with a fresh id.
+/// `oauth_admin_emails` is global (only read from the default tenant), so it is
+/// not copied. The new tenant's `site_title` is set to its name.
+async fn provision_from_default(pool: &crate::db::Pool, tenant: &str) -> Result<(), AppError> {
+    use crate::db::{DbDriver, Driver};
+    let default = crate::constants::DEFAULT_TENANT;
+    if tenant == default {
+        return Ok(());
+    }
+
+    // --- options ---
+    let sql = format!(
+        "SELECT id FROM options WHERE tenant_id = {} AND option_key <> 'oauth_admin_emails'",
+        Driver::ph(1)
+    );
+    let option_ids: Vec<i64> = sqlx::query_scalar(crate::db::safe_sql(&sql))
+        .bind(default)
+        .fetch_all(pool)
+        .await?;
+    let copy_option = format!(
+        "INSERT INTO options (id, tenant_id, option_key, value, type, group_name, label, \
+         description, validation, is_public, autoload, sort_order, updated_at) \
+         SELECT {}, {}, option_key, value, type, group_name, label, description, validation, \
+         is_public, autoload, sort_order, updated_at FROM options WHERE id = {}",
+        Driver::ph(1),
+        Driver::ph(2),
+        Driver::ph(3)
+    );
+    for src in &option_ids {
+        sqlx::query(crate::db::safe_sql(&copy_option))
+            .bind(crate::utils::id::new_id())
+            .bind(tenant)
+            .bind(src)
+            .execute(pool)
+            .await?;
+    }
+    crate::models::options::upsert_value(
+        pool,
+        "site_title",
+        &serde_json::Value::String(tenant.to_owned()),
+        Some(tenant),
+    )
+    .await?;
+
+    // --- currencies ---
+    let sql = format!("SELECT id FROM currencies WHERE tenant_id = {}", Driver::ph(1));
+    let currency_ids: Vec<i64> = sqlx::query_scalar(crate::db::safe_sql(&sql))
+        .bind(default)
+        .fetch_all(pool)
+        .await?;
+    let copy_currency = format!(
+        "INSERT INTO currencies (id, tenant_id, code, name, decimals, is_active, version, \
+         created_at, updated_at) \
+         SELECT {}, {}, code, name, decimals, is_active, 1, created_at, updated_at \
+         FROM currencies WHERE id = {}",
+        Driver::ph(1),
+        Driver::ph(2),
+        Driver::ph(3)
+    );
+    for src in &currency_ids {
+        sqlx::query(crate::db::safe_sql(&copy_currency))
+            .bind(crate::utils::id::new_id())
+            .bind(tenant)
+            .bind(src)
+            .execute(pool)
+            .await?;
+    }
+
+    tracing::info!(
+        "tenant {tenant}: provisioned {} options, {} currencies from default",
+        option_ids.len(),
+        currency_ids.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

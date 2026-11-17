@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+name="ngrok"
+supervisor="supervise-daemon"
+command="/data/bin/ngrok"
+command_args="http --config /data/config/ngrok.yml --url=${NGROK_DOMAIN} 80 --log stdout --log-format logfmt"
+output_log="/var/log/ngrok.log"
+error_log="/var/log/ngrok.log"
+respawn_delay=5
+respawn_max=0
+depend() {
+    need net
+}
