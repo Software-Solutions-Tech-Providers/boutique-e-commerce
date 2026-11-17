@@ -1,0 +1,15 @@
+# Files that run on the Raspberry Pi (Linux) must keep LF line endings,
+# even when checked out on Windows: CRLF breaks shell scripts (/bin/sh^M).
+*.sh         text eol=lf
+*.initd      text eol=lf
+*.conf       text eol=lf
+infra/pi/**  text eol=lf
+
+# Rust sources / configs: keep LF too (the build and patch diffs assume LF)
+*.rs         text eol=lf
+*.toml       text eol=lf
+Cargo.lock   text eol=lf
+*.diff       text eol=lf
+
+# Windows-only build helpers
+*.cmd        text eol=crlf
