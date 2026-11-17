@@ -1,0 +1,13 @@
+[package]
+name = "raisfast-derive"
+edition = "2024"
+description = "Procedural macros for raisfast — CRUD, Where DSL, and schema generation"
+license = "Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3", features = ["full", "parsing", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

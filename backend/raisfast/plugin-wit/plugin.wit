@@ -1,0 +1,116 @@
+package raisfast:plugin-wit;
+
+interface types {
+    record post-input {
+        title: string,
+        content: string,
+        slug: option<string>,
+        excerpt: option<string>,
+        category-id: option<string>,
+        tag-ids: option<list<string>>,
+        status: option<string>,
+        cover-image: option<string>,
+    }
+
+    record post-output {
+        id: string,
+        title: string,
+        slug: string,
+        content: string,
+        excerpt: option<string>,
+        status: string,
+        created-by: string,
+        updated-by: option<string>,
+        category-id: option<string>,
+        view-count: s64,
+        created-at: string,
+        updated-at: string,
+        published-at: option<string>,
+    }
+
+    record comment-input {
+        content: string,
+        nickname: option<string>,
+        email: option<string>,
+        parent-id: option<string>,
+    }
+
+    record content-event {
+        content-type: string,
+        data: string,
+        id: option<string>,
+    }
+}
+
+interface host-api {
+    use types.{post-output};
+
+    log: func(level: string, msg: string);
+    get-config: func(key: string) -> option<string>;
+    http-get: func(url: string) -> option<string>;
+    http-post: func(url: string, body: string) -> option<string>;
+    call-api: func(client-key: string, op: string, input: string) -> option<string>;
+    get-data: func(key: string) -> option<string>;
+    set-data: func(key: string, value: string) -> bool;
+    get-post: func(slug: string) -> option<string>;
+    db-query: func(sql: string, params: option<string>) -> string;
+    db-execute: func(sql: string, params: option<string>) -> string;
+    db-begin: func() -> string;
+    db-commit: func() -> string;
+    db-rollback: func() -> string;
+    // Content-type host API (group-aware: 'group/plural', plural, or table name).
+    ct-find: func(ct: string, query: string) -> string;
+    ct-get: func(ct: string, id: string) -> string;
+    ct-create: func(ct: string, data: string) -> string;
+    ct-update: func(ct: string, id: string, data: string) -> string;
+    // Job / integration host API.
+    job-enqueue: func(job-type: string, payload: string, opts: string) -> string;
+    get-receipt: func(trace-id: string) -> string;
+    // Session-token host API (short-session widget JWTs).
+    issue-token: func(input: string) -> string;
+    verify-token: func(token: string) -> string;
+    // ID utility: base62 (ID_ENCODING) → plain digit snowflake id.
+    decode-id: func(id: string) -> string;
+    // Presence host API (business-agnostic "who is available", architecture §5.3).
+    presence-available: func(tenant: string) -> string;
+    presence-status: func(tenant: string, subject: string) -> string;
+    presence-report: func(tenant: string, subject: string, status: string) -> string;
+    // Integration channel host API (app-scoped; channel-app-ownership.md §4.2).
+    channel-list: func() -> string;
+    channel-create: func(data: string) -> string;
+    channel-update: func(id: string, data: string) -> string;
+    channel-delete: func(id: string) -> string;
+    vfs-read: func(path: string) -> option<string>;
+    vfs-write: func(path: string, content: string) -> bool;
+    vfs-delete: func(path: string) -> bool;
+    vfs-exists: func(path: string) -> bool;
+    vfs-list: func(path: string) -> option<string>;
+    vfs-stat: func(path: string) -> option<string>;
+    emit-event: func(event-type: string, data: string) -> string;
+}
+
+interface plugin-hooks {
+    use types.{post-input, post-output, comment-input, content-event};
+
+    on-post-creating: func(input: post-input) -> option<post-input>;
+    on-post-updating: func(input: post-input) -> option<post-input>;
+    on-comment-creating: func(input: comment-input) -> option<comment-input>;
+    on-content-creating: func(input: content-event) -> option<content-event>;
+    on-content-updating: func(input: content-event) -> option<content-event>;
+    render-markdown: func(input: string) -> option<string>;
+    filter-html: func(input: string) -> option<string>;
+    on-post-created: func(output: post-output);
+    on-post-updated: func(output: post-output);
+    on-post-deleted: func(id: string);
+    on-comment-created: func(input: comment-input);
+    on-content-created: func(input: content-event);
+    on-content-updated: func(input: content-event);
+    on-content-deleted: func(content-type: string, id: string);
+    on-login: func(user-id: string);
+    on-cron-tick: func(payload: option<string>);
+}
+
+world plugin-world {
+    import host-api;
+    export plugin-hooks;
+}

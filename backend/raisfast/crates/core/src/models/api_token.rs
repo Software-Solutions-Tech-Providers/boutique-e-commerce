@@ -1,0 +1,378 @@
+//! API Token model and database queries
+//!
+//! Defines the data structure for API Tokens (long-lived access tokens) and
+//! create, find, delete operations on the `api_tokens` table. Tokens are stored
+//! as SHA-256 hashes for lookup and AES-256-GCM encrypted ciphertext for
+//! post-creation retrieval.
+
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+#[cfg(feature = "export-types")]
+use ts_rs::TS;
+
+use crate::db::{DbDriver, Driver};
+use crate::errors::app_error::AppResult;
+use crate::types::snowflake_id::SnowflakeId;
+use crate::utils::tz::Timestamp;
+
+/// API Token full database row model
+#[derive(Debug, FromRow, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: SnowflakeId,
+    pub user_id: SnowflakeId,
+    pub name: String,
+    pub description: String,
+    pub token_hash: String,
+    pub token_encrypted: String,
+    pub scopes: serde_json::Value,
+    pub last_used_at: Option<Timestamp>,
+    pub expires_at: Option<Timestamp>,
+    pub created_at: Timestamp,
+}
+
+/// API Token list item (sanitized, without token_hash)
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiTokenListItem {
+    pub id: SnowflakeId,
+    pub name: String,
+    pub description: String,
+    pub token: String,
+    pub scopes: Vec<String>,
+    pub last_used_at: Option<Timestamp>,
+    pub expires_at: Option<Timestamp>,
+    pub created_at: Timestamp,
+}
+
+/// Internal DB row for `list_by_user` (scopes stored as JSON text in the column)
+#[derive(Debug, FromRow)]
+struct ApiTokenRow {
+    id: SnowflakeId,
+    name: String,
+    description: String,
+    token_encrypted: String,
+    scopes: serde_json::Value,
+    last_used_at: Option<Timestamp>,
+    expires_at: Option<Timestamp>,
+    created_at: Timestamp,
+}
+
+/// Create a new API Token record
+#[allow(clippy::too_many_arguments)]
+pub async fn create(
+    pool: &crate::db::Pool,
+    user_id: SnowflakeId,
+    name: &str,
+    description: &str,
+    token_hash: &str,
+    token_encrypted: &str,
+    scopes: &serde_json::Value,
+    expires_at: Option<&str>,
+) -> AppResult<ApiToken> {
+    let (id, now) = (
+        crate::utils::id::new_snowflake_id(),
+        crate::utils::tz::now_utc(),
+    );
+    raisfast_derive::crud_insert!(pool, "api_tokens", [
+        "id" => id,
+        "user_id" => user_id,
+        "name" => name,
+        "description" => description,
+        "token_hash" => token_hash,
+        "token_encrypted" => token_encrypted,
+        "scopes" => scopes,
+        "expires_at" => crate::utils::tz::parse_rfc3339_opt(expires_at),
+        "created_at" => now
+    ])?;
+    find_by_id(pool, id).await?.ok_or_else(|| {
+        crate::errors::app_error::AppError::Internal(anyhow::anyhow!(
+            "failed to fetch newly created api token"
+        ))
+    })
+}
+
+/// Find API Token by token_hash
+pub async fn find_by_hash(pool: &crate::db::Pool, token_hash: &str) -> AppResult<Option<ApiToken>> {
+    raisfast_derive::crud_find!(pool, "api_tokens", ApiToken, where: ("token_hash", token_hash))
+        .map_err(Into::into)
+}
+
+/// List all API Tokens for a given user (sanitized)
+pub async fn list_by_user(
+    pool: &crate::db::Pool,
+    user_id: SnowflakeId,
+) -> AppResult<Vec<ApiTokenListItem>> {
+    raisfast_derive::check_schema!(
+        "api_tokens",
+        "id",
+        "name",
+        "description",
+        "token_encrypted",
+        "scopes",
+        "last_used_at",
+        "expires_at",
+        "created_at",
+        "user_id"
+    );
+    let sql = format!(
+        "SELECT id, name, description, token_encrypted, scopes, last_used_at, expires_at, created_at FROM api_tokens WHERE user_id = {} ORDER BY created_at DESC",
+        Driver::ph(1)
+    );
+    let rows = sqlx::query_as::<_, ApiTokenRow>(crate::db::safe_sql(&sql))
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+    let items = rows
+        .into_iter()
+        .map(|r| ApiTokenListItem {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            token: r.token_encrypted,
+            scopes: serde_json::from_value(r.scopes).unwrap_or_default(),
+            last_used_at: r.last_used_at,
+            expires_at: r.expires_at,
+            created_at: r.created_at,
+        })
+        .collect();
+    Ok(items)
+}
+
+/// Find API Token by id
+pub async fn find_by_id(pool: &crate::db::Pool, id: SnowflakeId) -> AppResult<Option<ApiToken>> {
+    raisfast_derive::crud_find!(pool, "api_tokens", ApiToken, where: ("id", id)).map_err(Into::into)
+}
+
+/// Delete API Token by id
+pub async fn delete_by_id(pool: &crate::db::Pool, id: SnowflakeId) -> AppResult<()> {
+    raisfast_derive::crud_delete!(pool, "api_tokens", where: ("id", id))?;
+    Ok(())
+}
+
+/// Update name, description and scopes by id
+pub async fn update_name_desc_scopes(
+    pool: &crate::db::Pool,
+    id: SnowflakeId,
+    name: &str,
+    description: &str,
+    scopes: &serde_json::Value,
+) -> AppResult<()> {
+    raisfast_derive::crud_update!(pool, "api_tokens",
+        bind: ["name" => name, "description" => description, "scopes" => scopes],
+        where: ("id", id)
+    )?;
+    Ok(())
+}
+
+/// Update last_used_at (by integer primary key)
+pub async fn touch_last_used(pool: &crate::db::Pool, id: SnowflakeId) -> AppResult<()> {
+    let now = crate::utils::tz::now_utc();
+    raisfast_derive::crud_update!(pool, "api_tokens",
+        bind: ["last_used_at" => now],
+        where: ("id", id)
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::snowflake_id::SnowflakeId;
+
+    async fn setup_pool() -> crate::db::Pool {
+        crate::test_pool!()
+    }
+
+    async fn insert_user(pool: &crate::db::Pool) -> i64 {
+        let user = crate::models::user::create(
+            pool,
+            &crate::commands::user::CreateUserCmd {
+                username: crate::utils::id::new_id().to_string(),
+                registered_via: crate::models::user::RegisteredVia::Email,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        *user.id
+    }
+
+    #[tokio::test]
+    async fn create_and_find_by_hash() {
+        let pool = setup_pool().await;
+        let user_id = insert_user(&pool).await;
+        let hash = format!("hash123_{}", crate::utils::id::new_id());
+        let row = create(
+            &pool,
+            SnowflakeId(user_id),
+            "Test",
+            "",
+            &hash,
+            "enc_ab",
+            &serde_json::json!(["read"]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(row.name, "Test");
+        assert_eq!(row.token_hash, hash);
+        assert_eq!(row.token_encrypted, "enc_ab");
+        assert_eq!(row.scopes, serde_json::json!(["read"]));
+        assert!(row.expires_at.is_none());
+
+        let found = find_by_hash(&pool, &hash).await.unwrap().unwrap();
+        assert_eq!(found.id, row.id);
+    }
+
+    #[tokio::test]
+    async fn find_by_hash_not_found() {
+        let pool = setup_pool().await;
+        let result = find_by_hash(&pool, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_by_id_not_found() {
+        let pool = setup_pool().await;
+        let result = find_by_id(&pool, SnowflakeId(99999)).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_by_user_returns_tokens() {
+        let pool = setup_pool().await;
+        let user_id = insert_user(&pool).await;
+        let h1 = format!("h1_{}", crate::utils::id::new_id());
+        create(
+            &pool,
+            SnowflakeId(user_id),
+            "First",
+            "",
+            &h1,
+            "enc_a",
+            &serde_json::json!(["read"]),
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let h2 = format!("h2_{}", crate::utils::id::new_id());
+        create(
+            &pool,
+            SnowflakeId(user_id),
+            "Second",
+            "",
+            &h2,
+            "enc_b",
+            &serde_json::json!(["write"]),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let list = list_by_user(&pool, SnowflakeId(user_id)).await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "Second");
+        assert_eq!(list[1].name, "First");
+    }
+
+    #[tokio::test]
+    async fn list_by_user_empty() {
+        let pool = setup_pool().await;
+        let list = list_by_user(&pool, SnowflakeId(99999)).await.unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_by_id_removes_token() {
+        let pool = setup_pool().await;
+        let user_id = insert_user(&pool).await;
+        let h3 = format!("h3_{}", crate::utils::id::new_id());
+        let row = create(
+            &pool,
+            SnowflakeId(user_id),
+            "Del",
+            "",
+            &h3,
+            "enc_c",
+            &serde_json::json!(["read"]),
+            None,
+        )
+        .await
+        .unwrap();
+        delete_by_id(&pool, row.id).await.unwrap();
+        let found = find_by_id(&pool, row.id).await.unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn touch_last_used_updates_field() {
+        let pool = setup_pool().await;
+        let user_id = insert_user(&pool).await;
+        let h4 = format!("h4_{}", crate::utils::id::new_id());
+        let row = create(
+            &pool,
+            SnowflakeId(user_id),
+            "Touch",
+            "",
+            &h4,
+            "enc_d",
+            &serde_json::json!(["read"]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(row.last_used_at.is_none());
+
+        touch_last_used(&pool, row.id).await.unwrap();
+        let updated = find_by_id(&pool, row.id).await.unwrap().unwrap();
+        assert!(updated.last_used_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn create_with_expires_at() {
+        let pool = setup_pool().await;
+        let user_id = insert_user(&pool).await;
+        let h5 = format!("h5_{}", crate::utils::id::new_id());
+        let row = create(
+            &pool,
+            SnowflakeId(user_id),
+            "Expiring",
+            "",
+            &h5,
+            "enc_e",
+            &serde_json::json!(["admin"]),
+            Some("2099-12-31T00:00:00+00:00"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            row.expires_at.unwrap(),
+            "2099-12-31T00:00:00+00:00".parse::<Timestamp>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_by_user_does_not_include_hash() {
+        let pool = setup_pool().await;
+        let user_id = insert_user(&pool).await;
+        let secret_hash = format!("secret_hash_{}", crate::utils::id::new_id());
+        create(
+            &pool,
+            SnowflakeId(user_id),
+            "Safe",
+            "",
+            &secret_hash,
+            "enc_f",
+            &serde_json::json!(["read"]),
+            None,
+        )
+        .await
+        .unwrap();
+        let list = list_by_user(&pool, SnowflakeId(user_id)).await.unwrap();
+        let json = serde_json::to_value(&list[0]).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("token_hash"));
+        assert!(!obj.contains_key("user_id"));
+    }
+}

@@ -1,0 +1,35 @@
+/target
+.env
+.env.local
+.env.*.local
+*.db
+data/
+backups/
+.local-cache/
+
+# sqlx offline cache (per-backend, committed for CI cross-platform builds)
+# /.sqlx is a local symlink to one of .sqlx-sqlite, .sqlx-postgres, .sqlx-mysql
+/.sqlx
+
+node_modules
+*.pid
+
+# storage root path
+storage/*
+!storage/.gitkeep
+!storage/skills
+
+# test artifacts
+test-storage/
+
+frontend/
+dev-docs/
+
+fly.toml
+
+/3rd/
+
+crates/core/target/
+
+apps/
+third/

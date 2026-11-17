@@ -1,0 +1,250 @@
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Walk up from `CARGO_MANIFEST_DIR` to find the directory containing the
+/// workspace-defining `Cargo.toml` (the one with a `[workspace]` table).
+///
+/// This anchors resource paths to the workspace root so that the crate can be
+/// relocated freely without breaking `include_str!` / `rust-embed` references.
+fn workspace_root() -> PathBuf {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let mut dir: &Path = &manifest_dir;
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.is_file()
+            && let Ok(content) = fs::read_to_string(&cargo_toml)
+            && content.contains("[workspace]")
+        {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => return manifest_dir,
+        }
+    }
+}
+
+fn main() {
+    let root = workspace_root();
+
+    // Expose the workspace root to the crate (and proc-macros) at compile time.
+    // - `env!("RAISFAST_ROOT")` in include_str!(concat!(...))
+    // - `$RAISFAST_ROOT` in rust-embed #[folder] (needs `interpolate-folder-path`)
+    println!("cargo:rustc-env=RAISFAST_ROOT={}", root.display());
+
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("migrations").display()
+    );
+
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let dest = Path::new(&out_dir).join("schema_meta.rs");
+
+    let schema = parse_schema(&root);
+    let code = generate_code(&schema);
+    fs::write(&dest, code).unwrap();
+
+    // Compile the vendored docreader proto (services/docreader) into the
+    // docreader parse-engine client (+ server stubs for in-process fakes).
+    let proto = root
+        .join("services")
+        .join("docreader")
+        .join("proto")
+        .join("docreader.proto");
+    println!("cargo:rerun-if-changed={}", proto.display());
+    let include = proto.parent().expect("proto dir").to_path_buf();
+    tonic_prost_build::configure()
+        .build_client(true)
+        .build_server(true)
+        .compile_protos(&[proto], &[include])
+        .expect("docreader proto compile");
+}
+
+fn parse_schema(root: &Path) -> HashMap<String, Vec<String>> {
+    let mut tables: HashMap<String, Vec<String>> = HashMap::new();
+
+    for path in &[
+        "migrations/sqlite/schema.sqlite.sql",
+        "migrations/sqlite/tenantable.sqlite.sql",
+    ] {
+        if let Ok(content) = fs::read_to_string(root.join(path)) {
+            parse_sql(&content, &mut tables);
+        }
+    }
+
+    tables
+}
+
+fn parse_sql(content: &str, tables: &mut HashMap<String, Vec<String>>) {
+    let mut in_create = false;
+    let mut current_table = String::new();
+    let mut columns: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if !in_create {
+            if let Some(rest) = trimmed.strip_prefix("CREATE TABLE")
+                && let Some(name) = extract_table_name(rest)
+            {
+                current_table = name;
+                columns = Vec::new();
+                in_create = true;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with(')')
+            && !trimmed.contains("DEFAULT")
+            && !trimmed.contains("REFERENCES")
+        {
+            if !current_table.is_empty() {
+                tables.insert(current_table.clone(), columns.clone());
+            }
+            in_create = false;
+            continue;
+        }
+
+        if let Some(col) = extract_column_name(trimmed) {
+            columns.push(col);
+        }
+    }
+}
+
+fn extract_table_name(s: &str) -> Option<String> {
+    let s = s.trim();
+    let s = s.strip_prefix("IF NOT EXISTS").unwrap_or(s).trim();
+    let s = s.strip_prefix("IF EXISTS").unwrap_or(s).trim();
+
+    let name = if s.starts_with('"') {
+        s.split('"').nth(1)?.to_string()
+    } else if s.starts_with('`') {
+        s.split('`').nth(1)?.to_string()
+    } else {
+        s.split(|c: char| c.is_whitespace() || c == '(')
+            .next()?
+            .to_string()
+    };
+
+    if name.is_empty() { None } else { Some(name) }
+}
+
+fn extract_column_name(line: &str) -> Option<String> {
+    let line = line.trim_end_matches(',');
+    let line = line.trim();
+
+    if line.is_empty() || line.starts_with("--") {
+        return None;
+    }
+
+    let upper = line.to_uppercase();
+    if upper.starts_with("PRIMARY KEY")
+        || upper.starts_with("UNIQUE(")
+        || upper.starts_with("UNIQUE (")
+        || upper.starts_with("CHECK(")
+        || upper.starts_with("CHECK (")
+        || upper.starts_with("FOREIGN KEY")
+        || upper.starts_with("CONSTRAINT")
+    {
+        return None;
+    }
+
+    let name = if line.starts_with('"') {
+        line.split('"').nth(1)?.to_string()
+    } else if line.starts_with('`') {
+        line.split('`').nth(1)?.to_string()
+    } else {
+        line.split_whitespace().next()?.to_string()
+    };
+
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+
+    Some(name)
+}
+
+fn generate_code(tables: &HashMap<String, Vec<String>>) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    for (table, columns) in tables {
+        for col in columns {
+            if col == "id" || col == "rowid" || col == "tenant_id" {
+                continue;
+            }
+            entries.push(format!("    (\"{table}\", \"{col}\"),"));
+        }
+    }
+
+    let mut table_list: Vec<String> = Vec::new();
+    for (table, columns) in tables {
+        let cols: String = columns
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        table_list.push(format!("    (\"{table}\", &[{cols}]),"));
+    }
+
+    let e = entries.join("\n");
+    let t = table_list.join("\n");
+
+    format!(
+        r#"// Auto-generated by build.rs — DO NOT EDIT
+
+const COLUMNS: &[(&str, &str)] = &[
+{e}
+];
+
+const fn str_eq(a: &str, b: &str) -> bool {{
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {{
+        return false;
+    }}
+    let mut i = 0;
+    while i < a.len() {{
+        if a[i] != b[i] {{
+            return false;
+        }}
+        i += 1;
+    }}
+    true
+}}
+
+/// Returns `true` if the given table has the given column.
+/// `tenant_id`, `id`, and `rowid` are always accepted.
+pub const fn column_exists(table: &str, column: &str) -> bool {{
+    if str_eq(column, "tenant_id") || str_eq(column, "id") || str_eq(column, "rowid") {{
+        return true;
+    }}
+    let mut i = 0;
+    while i < COLUMNS.len() {{
+        if str_eq(COLUMNS[i].0, table) && str_eq(COLUMNS[i].1, column) {{
+            return true;
+        }}
+        i += 1;
+    }}
+    false
+}}
+
+/// All tables and their columns.
+pub const ALL_TABLES: &[(&str, &[&str])] = &[
+{t}
+];
+
+/// Returns `true` if the given table exists in the schema.
+pub const fn table_exists(table: &str) -> bool {{
+    let mut i = 0;
+    while i < ALL_TABLES.len() {{
+        if str_eq(ALL_TABLES[i].0, table) {{
+            return true;
+        }}
+        i += 1;
+    }}
+    false
+}}
+"#
+    )
+}

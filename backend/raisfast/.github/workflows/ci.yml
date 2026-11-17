@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FEATURES: "plugin-js plugin-rhai search-tantivy payment-all tunnel mcp cron-system"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Clippy (SQLite only — clippy macro expansion differs from check,
+  #    causing cache hash mismatches on PG/MySQL. SQLite's loose typing
+  #    covers the broadest type checking.) ───────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - run: ln -sf .sqlx-sqlite .sqlx
+      - name: Clippy
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo clippy -p raisfast --tests --no-default-features --features "db-sqlite ${{ env.FEATURES }}" -- -D warnings
+
+  # ── Tests (uses committed cache) ─────────────────────────────────
+  test-sqlite:
+    name: Test (sqlite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-sqlite
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - run: ln -sf .sqlx-sqlite .sqlx
+      - name: Test
+        env:
+          SQLX_OFFLINE: "true"
+          DATABASE_URL: "sqlite::memory:"
+          RAISFAST_TEST_DB_URL: "sqlite::memory:"
+        run: cargo test -p raisfast --no-default-features --features "db-sqlite ${{ env.FEATURES }}"
+
+  # ── ID_ENCODING=true guard: encoded ids change every wire boundary
+  #    (DTO serialization, FK resolution, admin path params). Keeps bugs like
+  #    `as_i64` on encoded strings from shipping. Scope: lib + integration
+  #    e2e — ecommerce DTO SnowflakeId migration is tracked debt. ──────
+  test-sqlite-id-encoding:
+    name: Test (sqlite, ID_ENCODING=true)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-sqlite-id-encoding
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - run: ln -sf .sqlx-sqlite .sqlx
+      - name: Test (lib + integration e2e)
+        env:
+          SQLX_OFFLINE: "true"
+          DATABASE_URL: "sqlite::memory:"
+          RAISFAST_TEST_DB_URL: "sqlite::memory:"
+          ID_ENCODING: "true"
+        run: |
+          cargo test -p raisfast --lib --no-default-features --features "db-sqlite ${{ env.FEATURES }} integration-stream"
+          cargo test -p raisfast --test api integration_ --no-default-features --features "db-sqlite ${{ env.FEATURES }} integration-stream"
+
+  test-postgres:
+    name: Test (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: raisfast_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-postgres
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev postgresql-client
+      - run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d raisfast_test -f migrations/postgres/schema.postgres.sql
+          ln -sf .sqlx-postgres .sqlx
+      - name: Test
+        env:
+          SQLX_OFFLINE: "true"
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/raisfast_test"
+          RAISFAST_TEST_DB_URL: "postgres://postgres:postgres@localhost:5432/raisfast_test"
+        run: cargo test -p raisfast --no-default-features --features "db-postgres ${{ env.FEATURES }}" -- --test-threads=1
+
+  test-mysql:
+    name: Test (mysql)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: [3306:3306]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-mysql
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - run: |
+          mysql -h 127.0.0.1 -u root -proot -e "CREATE DATABASE IF NOT EXISTS raisfast_test"
+          mysql -h 127.0.0.1 -u root -proot raisfast_test < migrations/mysql/schema.mysql.sql
+          ln -sf .sqlx-mysql .sqlx
+      - name: Test
+        env:
+          SQLX_OFFLINE: "true"
+          DATABASE_URL: "mysql://root:root@127.0.0.1:3306/raisfast_test"
+          RAISFAST_TEST_DB_URL: "mysql://root:root@127.0.0.1:3306/raisfast_test"
+        run: cargo test -p raisfast --no-default-features --features "db-mysql ${{ env.FEATURES }}" -- --test-threads=1

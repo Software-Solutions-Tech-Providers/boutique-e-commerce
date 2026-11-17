@@ -1,0 +1,48 @@
+[content_type]
+name = "ingress_email"
+singular = "ingress_email"
+plural = "ingress_emails"
+table = "ingress_emails"
+implements = [
+    "ownable",
+    "timestampable",
+]
+
+[fields.external_id]
+type = "text"
+max_length = 255
+
+[fields.body]
+type = "text"
+max_length = 100000
+
+[fields.subject]
+type = "text"
+max_length = 255
+
+[fields.from_addr]
+type = "text"
+max_length = 255
+
+[fields.html_body]
+type = "richtext"
+
+[api.list]
+access = "authed"
+cache = false
+
+[api.get]
+access = "authed"
+cache = false
+
+[api.create]
+access = "authed"
+cache = false
+
+[api.update]
+access = "owner"
+cache = false
+
+[api.delete]
+access = "admin"
+cache = false

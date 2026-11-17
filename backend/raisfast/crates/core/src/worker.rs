@@ -1,0 +1,520 @@
+//! Background job queue
+//!
+//! An async task system persisted via `SQLite`, decoupled from the business layer through `EventBus`.
+//!
+//! Data flow:
+//! ```text
+//! Service → EventBus.emit(Event) → JobEnqueuer → SQLite jobs table → WorkerRunner → JobHandler
+//! ```
+
+mod dispatcher;
+mod enqueuer;
+mod handler;
+pub mod handlers;
+mod job_queue;
+mod runner;
+mod scheduler;
+mod sweeper;
+
+use std::time::Duration;
+
+#[cfg(feature = "export-types")]
+use ts_rs::TS;
+
+use crate::types::snowflake_id::SnowflakeId;
+use serde::{Deserialize, Serialize};
+
+use crate::errors::app_error::AppResult;
+use crate::utils::tz::Timestamp;
+
+define_enum!(
+    JobStatus {
+        Pending = "pending",
+        Running = "running",
+        Completed = "completed",
+        Failed = "failed",
+        Dead = "dead",
+        Cancelled = "cancelled",
+    }
+);
+
+define_enum!(
+    CronExecStatus {
+        Running = "running",
+        Dispatched = "dispatched",
+        Completed = "completed",
+        Failed = "failed",
+        Dead = "dead",
+        TimedOut = "timed_out",
+    }
+);
+
+/// Visibility timeout (seconds) for long-running jobs (document parse, image
+/// recognition, document conversion). Keeps `StuckJobSweeper` from reclaiming a
+/// live job; the runner additionally heartbeats `updated_at` independently.
+pub const LONG_JOB_TIMEOUT_SECS: i32 = 3600;
+
+pub use dispatcher::PluginCronDispatcher;
+pub use enqueuer::JobEnqueuer;
+pub use handler::{ExecutionClass, HandlerMeta, JobHandler, JobHandlerRegistry, LogJobHandler};
+pub use job_queue::DefaultJobQueue;
+pub use runner::WorkerRunner;
+pub use scheduler::{
+    CronExecutionLog, CronSchedule, CronScheduler, cleanup_execution_logs, complete_execution_log,
+    complete_execution_log_with, create_execution_log, create_schedule, create_schedule_v2,
+    create_schedule_with_plugin, create_script_schedule, create_system_schedule, delete_schedule,
+    fail_execution_log, fail_execution_log_with, find_by_id, list_execution_logs, list_schedules,
+    next_run, recent_execution_logs, remove_plugin_crons, seed_defaults, sync_plugin_crons,
+    toggle_schedule, update_schedule,
+};
+pub use sweeper::StuckJobSweeper;
+
+#[cfg(feature = "export-types")]
+export_types!(
+    Job,
+    JobStatus,
+    CronExecStatus,
+    CronSchedule,
+    CronExecutionLog,
+    HandlerMeta,
+);
+
+/// Job types and parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+#[cfg_attr(
+    feature = "export-types",
+    ts(tag = "type", content = "payload", rename_all = "snake_case")
+)]
+#[non_exhaustive]
+pub enum Job {
+    SendWelcomeEmail {
+        user_id: SnowflakeId,
+        email: String,
+        username: String,
+    },
+    GenerateThumbnail {
+        media_id: SnowflakeId,
+        size: u32,
+    },
+    ScheduledPublish {
+        post_id: SnowflakeId,
+    },
+    WebhookNotify {
+        url: String,
+        #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+        payload: serde_json::Value,
+    },
+    RebuildSearchIndex {
+        post_ids: Vec<i64>,
+    },
+    InvalidateCache {
+        keys: Vec<String>,
+    },
+    GenerateSitemap,
+    SendPasswordResetEmail {
+        user_id: SnowflakeId,
+        email: String,
+        reset_token: String,
+    },
+    SendSmsCode {
+        phone: String,
+        code: String,
+        purpose: String,
+    },
+    SendEmailVerification {
+        user_id: SnowflakeId,
+        email: String,
+        verify_token: String,
+    },
+    ExpirePaymentOrders,
+    ExpireOrders,
+    RetryPaymentCallback {
+        payment_order_id: SnowflakeId,
+    },
+    ReconcilePayments,
+    ProcessWalletOutbox,
+    KbProcessDocument {
+        doc_id: SnowflakeId,
+        tenant_id: String,
+    },
+    KbRebuildVectorIndex {
+        kb_id: SnowflakeId,
+        tenant_id: String,
+    },
+    /// Daily kb_runs retention sweep (kb-observability-design §10).
+    KbRunsCleanup {},
+    KbImageRecognize {
+        doc_id: SnowflakeId,
+        tenant_id: String,
+    },
+    KbDistillWiki {
+        kb_id: SnowflakeId,
+        doc_ids: Vec<i64>,
+        tenant_id: String,
+    },
+    /// 独立文档转换 job（dev-docs/document/service-design.md M1）。
+    ConvertDocument {
+        /// 公开 job id（同时是结果存储目录键）。
+        job_id: String,
+        tenant_id: String,
+        filename: String,
+        engine: Option<String>,
+        extract_images: bool,
+    },
+    /// 独立图像识别 job（dev-docs/document/service-design.md M2）。
+    RecognizeImage {
+        job_id: String,
+        tenant_id: String,
+        model: Option<String>,
+        prompt: Option<String>,
+    },
+    /// Custom job type, supports arbitrary `job_type` + JSON payload
+    ///
+    /// When no built-in Handler matches, WorkerRunner falls back to plugin dispatch.
+    Custom {
+        job_type: String,
+        #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+        payload: serde_json::Value,
+    },
+}
+
+impl Job {
+    /// Returns the `job_type` string (serde tag)
+    #[must_use]
+    pub fn job_type(&self) -> &str {
+        match self {
+            Job::SendWelcomeEmail { .. } => "send_welcome_email",
+            Job::GenerateThumbnail { .. } => "generate_thumbnail",
+            Job::ScheduledPublish { .. } => "scheduled_publish",
+            Job::WebhookNotify { .. } => "webhook_notify",
+            Job::RebuildSearchIndex { .. } => "rebuild_search_index",
+            Job::InvalidateCache { .. } => "invalidate_cache",
+            Job::GenerateSitemap => "generate_sitemap",
+            Job::SendPasswordResetEmail { .. } => "send_password_reset_email",
+            Job::SendSmsCode { .. } => "send_sms_code",
+            Job::SendEmailVerification { .. } => "send_email_verification",
+            Job::ExpirePaymentOrders => "expire_payment_orders",
+            Job::ExpireOrders => "expire_orders",
+            Job::RetryPaymentCallback { .. } => "retry_payment_callback",
+            Job::ReconcilePayments => "reconcile_payments",
+            Job::ProcessWalletOutbox => "process_wallet_outbox",
+            Job::KbProcessDocument { .. } => "kb_process_document",
+            Job::KbImageRecognize { .. } => "kb_image_recognize",
+            Job::KbRebuildVectorIndex { .. } => "kb_rebuild_vector_index",
+            Job::KbRunsCleanup {} => "kb_runs_cleanup",
+            Job::KbDistillWiki { .. } => "kb_distill_wiki",
+            Job::ConvertDocument { .. } => "convert_document",
+            Job::RecognizeImage { .. } => "recognize_image",
+            Job::Custom { job_type, .. } => job_type,
+        }
+    }
+}
+
+/// Enqueue parameters
+#[derive(Debug, Clone)]
+pub struct NewJob {
+    pub job: Job,
+    pub max_attempts: Option<u32>,
+    pub run_after: Option<Timestamp>,
+    /// Cron provenance: the `cron_schedules.id` that produced this job.
+    /// `None` for EventBus/ad-hoc enqueue. Used by `ScriptJobHandler` to
+    /// look up `script_source` and by `WorkerRunner` to write back
+    /// `cron_execution_log`.
+    pub cron_schedule_id: Option<SnowflakeId>,
+    /// Cron execution-log row id, created by `scheduler::dispatch`.
+    /// `WorkerRunner` writes the real result back to this row on complete/fail/dead.
+    pub cron_log_id: Option<SnowflakeId>,
+    /// Priority (higher = dequeued first). Default 0.
+    pub priority: i16,
+    /// Per-job visibility timeout in seconds. `None` = use global
+    /// `worker_visibility_timeout_secs`. Prevents long jobs being reclaimed
+    /// by `StuckJobSweeper`.
+    pub timeout_secs: Option<i32>,
+    /// Dedup key: enqueue is a no-op if a pending job with the same key exists.
+    /// Prevents event-storm duplicate jobs (e.g. RebuildSearchIndex).
+    pub dedup_key: Option<String>,
+}
+
+impl NewJob {
+    /// Builder: set `cron_schedule_id` + `cron_log_id` (cron provenance).
+    #[must_use]
+    pub fn with_cron(mut self, schedule_id: SnowflakeId, log_id: Option<SnowflakeId>) -> Self {
+        self.cron_schedule_id = Some(schedule_id);
+        self.cron_log_id = log_id;
+        self
+    }
+}
+
+impl From<Job> for NewJob {
+    fn from(job: Job) -> Self {
+        Self {
+            job,
+            max_attempts: None,
+            run_after: None,
+            cron_schedule_id: None,
+            cron_log_id: None,
+            priority: 0,
+            timeout_secs: None,
+            dedup_key: None,
+        }
+    }
+}
+
+/// Dequeued job record
+#[derive(Debug, Clone)]
+pub struct QueuedJob {
+    pub id: String,
+    pub job: Job,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub created_at: Timestamp,
+    /// Cron provenance (mirror of `NewJob::cron_schedule_id`).
+    pub cron_schedule_id: Option<SnowflakeId>,
+    /// Cron execution-log row id (mirror of `NewJob::cron_log_id`).
+    pub cron_log_id: Option<SnowflakeId>,
+    /// Per-job visibility timeout in seconds (mirror of `NewJob::timeout_secs`).
+    /// `None` = use the global `worker_visibility_timeout_secs`. Used by the
+    /// runner to drive the long-job heartbeat interval.
+    pub timeout_secs: Option<i32>,
+}
+
+/// Job-type allow/deny filter used by a worker pool when claiming.
+///
+/// `Any` = no filter (single-pool / tests). `Only` = claim just these types
+/// (CPU pool). `Except` = claim everything else (IO pool, so plugin/`Custom`
+/// jobs with no registered handler still get claimed).
+#[derive(Debug, Clone, Default)]
+pub enum JobTypeFilter {
+    #[default]
+    Any,
+    Only(Vec<String>),
+    Except(Vec<String>),
+}
+
+/// Job queue trait
+#[async_trait::async_trait]
+pub trait JobQueue: Send + Sync {
+    async fn enqueue(&self, new_job: NewJob) -> AppResult<()>;
+    async fn dequeue(&self, limit: usize) -> AppResult<Vec<QueuedJob>>;
+    /// Same as [`JobQueue::dequeue`] but restricted by a job-type filter. The
+    /// filter is applied in SQL so a pool never claims a job it will not run.
+    async fn dequeue_filtered(
+        &self,
+        limit: usize,
+        filter: &JobTypeFilter,
+    ) -> AppResult<Vec<QueuedJob>>;
+    async fn complete(&self, id: &str) -> AppResult<()>;
+    /// Marks a `pending` or `running` job as `cancelled`. Terminal jobs are
+    /// left untouched (idempotent). Returns an error only on DB failure.
+    async fn cancel(&self, id: &str) -> AppResult<()>;
+    /// Returns a claimed-but-not-yet-started job to `pending`, undoing the
+    /// claim's attempt increment. Used when a graceful shutdown arrives while a
+    /// batch is only partly processed.
+    async fn requeue(&self, id: &str) -> AppResult<()>;
+    async fn fail(&self, id: &str, error: &str) -> AppResult<()>;
+    async fn dead(&self, id: &str, error: &str) -> AppResult<()>;
+    async fn stats(&self) -> AppResult<JobStats>;
+    async fn list(
+        &self,
+        filter: JobFilter,
+        page: i64,
+        page_size: i64,
+    ) -> AppResult<(Vec<JobRow>, i64)>;
+    /// Distinct `job_type` values present in the queue (for filter dropdowns).
+    async fn list_job_types(&self) -> AppResult<Vec<String>>;
+    async fn retry(&self, id: &str) -> AppResult<()>;
+    async fn remove(&self, id: &str) -> AppResult<()>;
+    async fn cleanup(&self) -> AppResult<u64>;
+
+    /// Requeue jobs stuck in `running` past the visibility timeout.
+    ///
+    /// Jobs still under `max_attempts` go back to `pending`; those that have
+    /// exhausted their retries are marked `dead`.
+    async fn requeue_stuck(&self, timeout: Duration) -> AppResult<u64>;
+}
+
+/// Filter for admin job listing ([`JobQueue::list`]).
+#[derive(Debug, Clone, Default)]
+pub struct JobFilter {
+    pub status: Option<JobStatus>,
+    pub job_type: Option<String>,
+}
+
+/// Job statistics
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct JobStats {
+    pub pending: i64,
+    pub running: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub dead: i64,
+    pub cancelled: i64,
+}
+
+/// Job list row (for admin API)
+#[derive(Debug, Clone, Serialize)]
+pub struct JobRow {
+    pub id: String,
+    pub job_type: String,
+    pub payload: serde_json::Value,
+    pub status: JobStatus,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub run_after: Option<Timestamp>,
+    pub error: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Backoff duration: exponential backoff + jitter
+#[must_use]
+pub fn backoff_duration(attempts: u32) -> std::time::Duration {
+    let base_secs: u64 = 10;
+    let delay_secs = base_secs.saturating_mul(1u64 << attempts.min(6));
+    let jitter = 0.85 + (f64::from(rand_id(attempts)) / f64::from(u32::MAX)) * 0.3;
+    std::time::Duration::from_secs_f64(delay_secs as f64 * jitter)
+}
+
+/// Deterministic pseudo-random to avoid depending on the rand crate
+fn rand_id(seed: u32) -> u32 {
+    let mut x = seed.wrapping_mul(1103515245).wrapping_add(12345);
+    x = x ^ (x >> 16);
+    x = x.wrapping_mul(0x45d9f3b);
+    x = x ^ (x >> 16);
+    x
+}
+
+/// Parses a payload JSON into a Job
+///
+/// First attempts to match built-in enum variants; on failure, falls back to `Job::Custom`.
+pub(crate) fn parse_job(job_type: &str, payload: &str) -> AppResult<Job> {
+    let tagged = if payload.is_empty() || payload == "null" {
+        format!(r#"{{"type":"{job_type}"}}"#)
+    } else {
+        format!(r#"{{"type":"{job_type}","payload":{payload}}}"#)
+    };
+
+    if let Ok(job) = serde_json::from_str::<Job>(&tagged) {
+        return Ok(job);
+    }
+
+    let payload_value: serde_json::Value = if payload.is_empty() || payload == "null" {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(payload).unwrap_or(serde_json::Value::Null)
+    };
+
+    Ok(Job::Custom {
+        job_type: job_type.to_string(),
+        payload: payload_value,
+    })
+}
+
+/// Serializes a Job into a payload JSON value
+fn serialize_job(job: &Job) -> serde_json::Value {
+    if let Job::Custom { payload, .. } = job {
+        payload.clone()
+    } else {
+        let full = serde_json::to_value(job).unwrap_or_default();
+        full.get("payload")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_type_matches_tag() {
+        let job = Job::GenerateSitemap;
+        assert_eq!(job.job_type(), "generate_sitemap");
+
+        let job = Job::SendWelcomeEmail {
+            user_id: SnowflakeId(1),
+            email: "a@b.com".into(),
+            username: "alice".into(),
+        };
+        assert_eq!(job.job_type(), "send_welcome_email");
+    }
+
+    #[test]
+    fn serialize_roundtrip() {
+        let job = Job::RebuildSearchIndex {
+            post_ids: vec![1, 2],
+        };
+        let payload = serialize_job(&job).to_string();
+        let parsed = parse_job("rebuild_search_index", &payload).unwrap();
+        assert!(matches!(parsed, Job::RebuildSearchIndex { .. }));
+    }
+
+    #[test]
+    fn serialize_roundtrip_unit_variant() {
+        let job = Job::GenerateSitemap;
+        let payload = serialize_job(&job).to_string();
+        let parsed = parse_job("generate_sitemap", &payload).unwrap();
+        assert!(matches!(parsed, Job::GenerateSitemap));
+    }
+
+    #[test]
+    fn backoff_increases() {
+        let d0 = backoff_duration(0);
+        let d1 = backoff_duration(1);
+        let d2 = backoff_duration(2);
+        assert!(d1 > d0);
+        assert!(d2 > d1);
+    }
+
+    #[test]
+    fn new_job_from_job() {
+        let nj: NewJob = Job::GenerateSitemap.into();
+        assert!(nj.max_attempts.is_none());
+        assert!(nj.run_after.is_none());
+    }
+
+    #[test]
+    fn parse_job_fallback_to_custom() {
+        let job = parse_job("my_custom_task", r#"{"hello":"world"}"#).unwrap();
+        match job {
+            Job::Custom { job_type, payload } => {
+                assert_eq!(job_type, "my_custom_task");
+                assert_eq!(payload["hello"], "world");
+            }
+            _ => panic!("expected Custom variant"),
+        }
+    }
+
+    #[test]
+    fn parse_job_custom_no_payload() {
+        let job = parse_job("simple_task", "").unwrap();
+        match job {
+            Job::Custom { job_type, payload } => {
+                assert_eq!(job_type, "simple_task");
+                assert!(payload.is_null());
+            }
+            _ => panic!("expected Custom variant"),
+        }
+    }
+
+    #[test]
+    fn custom_job_roundtrip() {
+        let job = Job::Custom {
+            job_type: "my_task".into(),
+            payload: serde_json::json!({"key": "value"}),
+        };
+        assert_eq!(job.job_type(), "my_task");
+
+        let payload = serialize_job(&job).to_string();
+        let parsed = parse_job("my_task", &payload).unwrap();
+        match parsed {
+            Job::Custom { job_type, payload } => {
+                assert_eq!(job_type, "my_task");
+                assert_eq!(payload["key"], "value");
+            }
+            _ => panic!("expected Custom variant"),
+        }
+    }
+}

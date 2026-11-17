@@ -1,0 +1,405 @@
+pub mod openai;
+
+// Native-protocol providers that need host services (the anthropic codec,
+// shared HTTP client, param-override semantics) live in the host crate:
+// `core/src/llm/provider_anthropic.rs` — the dependency direction is
+// core → agent, so they cannot sit here. This directory holds
+// self-contained transports (URL + key is all they need).
+
+use async_trait::async_trait;
+use serde_json::Value;
+
+use crate::messages::{ChatMessage, TokenUsage, ToolCall};
+use crate::tool::ToolSpec;
+
+/// A chat request to a provider.
+#[derive(Debug)]
+pub struct ChatRequest<'a> {
+    pub messages: &'a [ChatMessage],
+    pub tools: Option<&'a [ToolSpec]>,
+    pub temperature: Option<f64>,
+    /// Sampling budget; provider wire name `max_tokens` (None = server default).
+    pub max_tokens: Option<i64>,
+    /// Up to 4 stop sequences (OpenAI wire limit).
+    pub stop: Option<Vec<String>>,
+}
+
+/// A completed non-streaming chat response.
+#[derive(Debug, Clone)]
+pub struct ChatResponse {
+    pub text: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<TokenUsage>,
+}
+
+impl ChatResponse {
+    pub fn text_only(text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            tool_calls: Vec::new(),
+            usage: None,
+        }
+    }
+
+    pub fn has_tool_calls(&self) -> bool {
+        !self.tool_calls.is_empty()
+    }
+}
+
+/// A live event while a response is being generated.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    TextDelta {
+        delta: String,
+    },
+    /// Reasoning/thinking delta (shown separately, never merged into text).
+    ReasoningDelta {
+        delta: String,
+    },
+    /// A fully assembled tool call (emitted at end of stream).
+    ToolCall(ToolCall),
+    Usage(TokenUsage),
+    Final,
+}
+
+/// One rerank result: document position in the input plus relevance score.
+#[derive(Debug, Clone)]
+pub struct RerankResult {
+    pub index: usize,
+    pub relevance_score: f32,
+}
+
+/// A text-to-image request (OpenAI `/images/generations` semantics).
+#[derive(Debug, Clone)]
+pub struct ImageRequest {
+    pub prompt: String,
+    /// Number of images to generate (wire default 1).
+    pub n: u32,
+    /// Wire size string, e.g. `1024x1024` (None = provider default).
+    pub size: Option<String>,
+    /// Optional reference images (character consistency / image editing):
+    /// first ref → OpenAI wire `image` param (data-URL or https URL).
+    /// Empty = pure text-to-image.
+    pub input_references: Vec<ImageInputRef>,
+}
+
+/// One reference image attached to an [`ImageRequest`] — same shape as
+/// [`VideoInputRef`](super::VideoInputRef) (url XOR b64+mime).
+#[derive(Debug, Clone)]
+pub struct ImageInputRef {
+    pub url: Option<String>,
+    pub b64_json: Option<String>,
+    pub mime: Option<String>,
+}
+
+impl ImageInputRef {
+    #[must_use]
+    pub fn from_url(url: impl Into<String>) -> Self {
+        Self {
+            url: Some(url.into()),
+            b64_json: None,
+            mime: None,
+        }
+    }
+
+    /// Wire string: the URL, or a data-URL synthesized from the payload.
+    #[must_use]
+    pub fn to_wire_string(&self) -> Option<String> {
+        if let Some(url) = &self.url {
+            return Some(url.clone());
+        }
+        self.b64_json.as_ref().map(|b64| {
+            // RFC 2397: data:[<mime>][;base64],<data>
+            format!(
+                "data:{};base64,{b64}",
+                self.mime.as_deref().unwrap_or("image/png")
+            )
+        })
+    }
+}
+
+/// One generated image — exactly one of the fields is set.
+#[derive(Debug, Clone)]
+pub struct GeneratedImage {
+    pub b64_json: Option<String>,
+    pub url: Option<String>,
+}
+
+/// Audio upload for transcription (`/audio/transcriptions` semantics).
+#[derive(Debug, Clone)]
+pub struct AudioInput<'a> {
+    pub data: &'a [u8],
+    pub filename: String,
+    pub mime: Option<String>,
+    /// BCP-47 hint (None = provider auto-detect).
+    pub language: Option<String>,
+}
+
+/// Speech-to-text result.
+#[derive(Debug, Clone)]
+pub struct Transcription {
+    pub text: String,
+    /// Timed segments (verbose_json `segments[]` semantics) — the raw
+    /// material for SRT subtitle generation. Empty when the upstream only
+    /// returns plain text (or ignores `response_format`).
+    pub segments: Vec<TranscriptSegment>,
+}
+
+/// One timed segment of a [`Transcription`] (seconds relative to clip start).
+#[derive(Debug, Clone)]
+pub struct TranscriptSegment {
+    pub id: i64,
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// An async video-generation task (OpenAI Videos API semantics: submit
+/// returns a task, content is fetched separately once completed).
+#[derive(Debug, Clone)]
+pub struct VideoRequest {
+    pub prompt: String,
+    /// Seconds of footage (string on the wire; None = provider default).
+    pub seconds: Option<String>,
+    /// Wire size string, e.g. `1280x720` (None = provider default).
+    pub size: Option<String>,
+    /// Optional reference images — image-to-video / first-frame anchoring.
+    /// Empty = pure text-to-video. Exactly one of `url`/`b64_json` is set
+    /// per ref; the openai-compat wire emits the first ref as
+    /// `input_reference` (data-URL when only b64 is available).
+    pub input_references: Vec<VideoInputRef>,
+    /// Provider callback URL for completion notification (hook path —
+    /// wait-triggers.md §4). None = poll-only. Providers map it to their
+    /// own field (kling `callback_url`, replicate `webhook`).
+    pub callback_url: Option<String>,
+}
+
+/// Music generation request (prompt = style description; lyrics optional —
+/// model-dependent, e.g. MiniMax music-01 uses lyrics templates).
+#[derive(Debug, Clone)]
+pub struct MusicRequest {
+    pub prompt: String,
+    pub lyrics: Option<String>,
+}
+
+/// One reference image attached to a [`VideoRequest`].
+#[derive(Debug, Clone)]
+pub struct VideoInputRef {
+    /// Publicly fetchable https URL (upstream pulls it).
+    pub url: Option<String>,
+    /// Inline base64 payload (no public URL required); `mime` describes it.
+    pub b64_json: Option<String>,
+    /// Mime of the b64 payload, e.g. `image/png` (used to build a data-URL).
+    pub mime: Option<String>,
+}
+
+impl VideoInputRef {
+    /// A public-URL reference.
+    #[must_use]
+    pub fn from_url(url: impl Into<String>) -> Self {
+        Self {
+            url: Some(url.into()),
+            b64_json: None,
+            mime: None,
+        }
+    }
+
+    /// The wire string for OpenAI-compat `input_reference`: the URL, or a
+    /// data-URL synthesized from the inline payload.
+    #[must_use]
+    pub fn to_wire_string(&self) -> Option<String> {
+        if let Some(url) = &self.url {
+            return Some(url.clone());
+        }
+        self.b64_json.as_ref().map(|b64| {
+            // RFC 2397: data:[<mime>][;base64],<data>
+            format!(
+                "data:{};base64,{b64}",
+                self.mime.as_deref().unwrap_or("image/png")
+            )
+        })
+    }
+}
+
+/// Terminal-or-not state of an async video task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoStatus {
+    Queued,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+impl VideoStatus {
+    /// Map a wire status string (`queued`/`in_progress`/`completed`/
+    /// `failed`/`expired`; unknown → `Failed` so consumers don't wait
+    /// forever on a state they don't know).
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "queued" => Self::Queued,
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            _ => Self::Failed,
+        }
+    }
+
+    /// Whether polling can stop.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+}
+
+/// Snapshot of an async video task.
+#[derive(Debug, Clone)]
+pub struct VideoTask {
+    pub id: String,
+    pub status: VideoStatus,
+    /// Provider progress 0-100 when reported.
+    pub progress: Option<i32>,
+    /// Failure reason when `status == Failed`.
+    pub error: Option<String>,
+    /// 提交期状态回传（provider 扩展 taskData，§provider-plugins 4.2）：
+    /// submit 时由 provider/扩展产出，调用方持久化，query 时原样回传——
+    /// 双路径任务查询等提交期知识的通用载体。原生 provider 恒 None。
+    pub data: Option<Value>,
+}
+
+pub use crate::errors::ProviderError;
+
+/// Abstraction over an LLM chat provider (non-streaming for MVP).
+#[async_trait]
+pub trait ModelProvider: Send + Sync {
+    fn name(&self) -> &str;
+
+    async fn chat(
+        &self,
+        request: &ChatRequest<'_>,
+        model: &str,
+    ) -> Result<ChatResponse, ProviderError>;
+
+    /// Text embeddings via the OpenAI-compatible `POST {base}/embeddings`
+    /// wire protocol (`{"model","input":[...]}` →
+    /// `{"data":[{"embedding":[...],"index"}]}`). Implementations must
+    /// return one vector per input text, in input order.
+    async fn embed(&self, _texts: &[&str], _model: &str) -> Result<Vec<Vec<f32>>, ProviderError> {
+        Err(ProviderError::Config(format!(
+            "provider {} does not support embeddings",
+            self.name()
+        )))
+    }
+
+    /// Streaming variant: feed incremental events to `on_event` while the
+    /// response is produced, and return the fully assembled response.
+    /// Default = non-streaming `chat` replayed as a single batch of events.
+    async fn chat_stream(
+        &self,
+        request: &ChatRequest<'_>,
+        model: &str,
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatResponse, ProviderError> {
+        let response = self.chat(request, model).await?;
+        if let Some(text) = &response.text {
+            on_event(StreamEvent::TextDelta {
+                delta: text.clone(),
+            });
+        }
+        for call in &response.tool_calls {
+            on_event(StreamEvent::ToolCall(call.clone()));
+        }
+        if let Some(usage) = response.usage {
+            on_event(StreamEvent::Usage(usage));
+        }
+        on_event(StreamEvent::Final);
+        Ok(response)
+    }
+
+    // ── additional modalities (design §8: the six relay faces) ─────────
+    //
+    // Every method defaults to `ProviderError::Config` "does not support"
+    // so the execution kernel treats the endpoint as unable to serve the
+    // request and fails over to another channel without recording a failure
+    // (mirrors the relay's provider guard).
+
+    fn unsupported_message(&self, modality: &str) -> ProviderError {
+        ProviderError::Config(format!(
+            "provider {} does not support {modality}",
+            self.name()
+        ))
+    }
+
+    /// Relevance reranking (Jina/Cohere `/rerank` shape): score `documents`
+    /// against `query`, best-first.
+    async fn rerank(
+        &self,
+        _query: &str,
+        _documents: &[&str],
+        _model: &str,
+    ) -> Result<Vec<RerankResult>, ProviderError> {
+        Err(self.unsupported_message("rerank"))
+    }
+
+    /// Text-to-image (OpenAI `/images/generations` semantics).
+    async fn generate_image(
+        &self,
+        _request: &ImageRequest,
+        _model: &str,
+    ) -> Result<Vec<GeneratedImage>, ProviderError> {
+        Err(self.unsupported_message("image generation"))
+    }
+
+    /// Speech-to-text (`/audio/transcriptions` semantics).
+    async fn transcribe(
+        &self,
+        _audio: &AudioInput<'_>,
+        _model: &str,
+    ) -> Result<Transcription, ProviderError> {
+        Err(self.unsupported_message("transcription"))
+    }
+
+    /// Text-to-speech (`/audio/speech` semantics) — raw audio bytes.
+    async fn speech(
+        &self,
+        _text: &str,
+        _voice: &str,
+        _model: &str,
+    ) -> Result<Vec<u8>, ProviderError> {
+        Err(self.unsupported_message("speech"))
+    }
+
+    /// Music generation (prompt/lyrics → audio bytes).
+    async fn music(&self, _request: &MusicRequest, _model: &str) -> Result<Vec<u8>, ProviderError> {
+        Err(self.unsupported_message("music generation"))
+    }
+
+    /// Submit an async video-generation task (`POST /videos`).
+    async fn video_submit(
+        &self,
+        _request: &VideoRequest,
+        _model: &str,
+    ) -> Result<VideoTask, ProviderError> {
+        Err(self.unsupported_message("video generation"))
+    }
+
+    /// Poll an async video task (`GET /videos/{id}`). `task_data` is the
+    /// opaque blob the provider returned from `video_submit` (`VideoTask::
+    /// data`), round-tripped by the caller — carries submit-time knowledge
+    /// (e.g. kling's endpoint action).
+    async fn video_query(
+        &self,
+        _task_id: &str,
+        _model: &str,
+        _task_data: Option<&serde_json::Value>,
+    ) -> Result<VideoTask, ProviderError> {
+        Err(self.unsupported_message("video generation"))
+    }
+
+    /// Fetch completed video bytes (`GET /videos/{id}/content`).
+    async fn video_content(
+        &self,
+        _task_id: &str,
+        _model: &str,
+        _task_data: Option<&serde_json::Value>,
+    ) -> Result<Vec<u8>, ProviderError> {
+        Err(self.unsupported_message("video generation"))
+    }
+}

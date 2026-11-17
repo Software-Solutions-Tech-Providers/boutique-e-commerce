@@ -1,0 +1,53 @@
+[content_type]
+name = "some test"
+singular = "some_test"
+plural = "some_tests"
+table = "some_tests"
+color = "#8b5cf6"
+implements = [
+    "timestampable",
+    "ownable",
+]
+
+[fields.title]
+type = "text"
+max_length = 255
+
+[fields.bb]
+type = "blob"
+
+[fields.dwf]
+type = "enum"
+enum_values = [
+    "sdf",
+    "asdfad",
+    "fgdf",
+]
+
+[fields.gallery_test]
+type = "mediaset"
+max_count = 5
+
+[fields.mail]
+type = "email"
+max_length = 255
+
+[api.list]
+access = "admin"
+cache = false
+
+[api.get]
+access = "authed"
+cache = false
+
+[api.create]
+access = "authed"
+cache = false
+
+[api.update]
+access = "authed"
+cache = false
+
+[api.delete]
+access = "admin"
+cache = false

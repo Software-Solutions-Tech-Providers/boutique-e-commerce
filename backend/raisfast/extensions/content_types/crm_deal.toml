@@ -1,0 +1,101 @@
+[content_type]
+name = "Deal"
+singular = "deal"
+plural = "deals"
+table = "crm_deals"
+group = "crm"
+description = "Deals and sales opportunities"
+implements = ["ownable", "timestampable"]
+
+[fields.title]
+type = "text"
+required = true
+max_length = 300
+label = "Deal Title"
+
+[fields.amount]
+type = "decimal"
+min = 0
+default = 0
+label = "Amount"
+
+[fields.currency]
+type = "enum"
+enum_values = ["CNY", "USD", "EUR", "GBP", "JPY"]
+default = "CNY"
+label = "Currency"
+
+[fields.stage]
+type = "enum"
+enum_values = ["prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost"]
+default = "prospecting"
+label = "Stage"
+
+[fields.probability]
+type = "integer"
+min = 0
+max = 100
+default = 10
+label = "Win Probability (%)"
+
+[fields.contact]
+type = "relation"
+relation_type = "many_to_one"
+target = "crm_contacts"
+foreign_key = "contact_id"
+label = "Related Contact"
+
+[fields.company]
+type = "relation"
+relation_type = "many_to_one"
+target = "crm_companies"
+foreign_key = "company_id"
+label = "Related Company"
+
+[fields.owner_id]
+type = "text"
+label = "Owner"
+
+[fields.close_date]
+type = "date"
+label = "Expected Close Date"
+
+[fields.description]
+type = "richtext"
+label = "Description"
+
+[fields.loss_reason]
+type = "enum"
+enum_values = ["no_budget", "no_decision", "lost_to_competitor", "timing", "lack_of_fit", "other"]
+label = "Loss Reason"
+
+[[indexes]]
+fields = ["stage"]
+
+[[indexes]]
+fields = ["owner_id", "created_at"]
+
+[[indexes]]
+fields = ["company_id"]
+
+[[indexes]]
+fields = ["contact_id"]
+
+[[indexes]]
+fields = ["close_date"]
+
+[api.list]
+access = "authed"
+
+[api.get]
+access = "authed"
+
+[api.create]
+access = "authed"
+
+[api.update]
+access = "authed"
+filter = "@request.auth.id == owner_id || @request.auth.role == 'admin'"
+
+[api.delete]
+access = "admin"

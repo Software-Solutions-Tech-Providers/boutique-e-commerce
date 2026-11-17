@@ -1,0 +1,100 @@
+[content_type]
+name = "Activity"
+singular = "activity"
+plural = "activities"
+table = "crm_activities"
+group = "crm"
+description = "Sales activities and interactions"
+implements = ["ownable", "timestampable"]
+
+[fields.type]
+type = "enum"
+enum_values = ["call", "email", "meeting", "note", "task", "demo", "follow_up"]
+required = true
+default = "note"
+label = "Activity Type"
+
+[fields.subject]
+type = "text"
+required = true
+max_length = 300
+label = "Subject"
+
+[fields.content]
+type = "richtext"
+label = "Content"
+
+[fields.contact]
+type = "relation"
+relation_type = "many_to_one"
+target = "crm_contacts"
+foreign_key = "contact_id"
+label = "Related Contact"
+
+[fields.company]
+type = "relation"
+relation_type = "many_to_one"
+target = "crm_companies"
+foreign_key = "company_id"
+label = "Related Company"
+
+[fields.deal]
+type = "relation"
+relation_type = "many_to_one"
+target = "crm_deals"
+foreign_key = "deal_id"
+label = "Related Deal"
+
+[fields.owner_id]
+type = "text"
+label = "Owner"
+
+[fields.activity_date]
+type = "datetime"
+required = true
+label = "Activity Date"
+
+[fields.duration_minutes]
+type = "integer"
+min = 0
+label = "Duration (minutes)"
+
+[fields.outcome]
+type = "enum"
+enum_values = ["successful", "unsuccessful", "scheduled", "cancelled"]
+label = "Outcome"
+
+[[indexes]]
+fields = ["type"]
+
+[[indexes]]
+fields = ["contact_id", "activity_date"]
+
+[[indexes]]
+fields = ["company_id"]
+
+[[indexes]]
+fields = ["deal_id"]
+
+[[indexes]]
+fields = ["owner_id", "activity_date"]
+
+[[indexes]]
+fields = ["activity_date"]
+
+[api.list]
+access = "authed"
+
+[api.get]
+access = "authed"
+
+[api.create]
+access = "authed"
+
+[api.update]
+access = "authed"
+filter = "@request.auth.id == owner_id || @request.auth.role == 'admin'"
+
+[api.delete]
+access = "authed"
+filter = "@request.auth.id == owner_id || @request.auth.role == 'admin'"

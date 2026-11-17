@@ -1,0 +1,140 @@
+name: Docker
+
+# Builds and pushes Docker image right after release.yml (cargo-dist) uploads
+# the SQLite binary to GitHub Release. Does NOT depend on build-all.yml.
+#
+# Flow:
+#   tag push → release.yml builds SQLite binary → uploads to Release
+#            → this workflow polls Release until binary appears → builds image
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.3.8)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          MAJOR_MINOR="$(echo "$VERSION" | cut -d. -f1-2)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "major_minor=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Release workflow to complete
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Wait for release.yml (cargo-dist) to finish uploading SQLite binaries.
+          echo "Waiting for Release workflow..."
+          for i in $(seq 1 120); do
+            STATUS=$(gh run list --repo ${{ github.repository }} \
+              --workflow release.yml \
+              --branch "${{ steps.tag.outputs.tag }}" \
+              --json status,conclusion --jq '.[0]')
+            echo "  Attempt $i: $STATUS"
+            CONCLUSION=$(echo "$STATUS" | jq -r '.conclusion // empty')
+            if [ "$CONCLUSION" = "success" ]; then
+              echo "Release workflow completed successfully"
+              break
+            fi
+            if [ "$CONCLUSION" = "failure" ] || [ "$CONCLUSION" = "cancelled" ]; then
+              echo "Release workflow failed — aborting"
+              exit 1
+            fi
+            if [ "$i" = "120" ]; then
+              echo "Timed out waiting for Release workflow"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Download SQLite binaries from GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          TAG="${{ steps.tag.outputs.tag }}"
+          for rust_arch in x86_64 aarch64; do
+            docker_arch=$([ "$rust_arch" = "x86_64" ] && echo "amd64" || echo "arm64")
+            gh release download "$TAG" \
+              --pattern "raisfast-${rust_arch}-unknown-linux-musl.tar.xz" \
+              --dir dist --clobber
+            mkdir -p "dist/${rust_arch}"
+            tar -xf "dist/raisfast-${rust_arch}-unknown-linux-musl.tar.xz" -C "dist/${rust_arch}/"
+            cp "dist/${rust_arch}/raisfast-${rust_arch}-unknown-linux-musl/raisfast" "dist/binary-${docker_arch}"
+            echo "Downloaded ${rust_arch} → dist/binary-${docker_arch}"
+          done
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          # Raw tags from the resolved release tag — works for both tag pushes
+          # (GITHUB_REF_NAME) and workflow_dispatch (inputs.tag), since semver
+          # tags can't be inferred from a branch ref on dispatch runs.
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.version }}
+            type=raw,value=${{ steps.tag.outputs.major_minor }}
+            type=raw,value=latest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ci
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Make package public
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # GHCR packages default to private on creation.
+          # This sets it to public so docker pull works without auth.
+          gh api --method PATCH \
+            "/orgs/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}" \
+            -f visibility=public \
+            || echo "Could not change visibility (may need org admin)"

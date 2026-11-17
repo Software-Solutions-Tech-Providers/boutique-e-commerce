@@ -1,0 +1,676 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+- IMAP connector: send the RFC 2971 `ID` command after login — NetEase servers (163/126/188) reject `SELECT` with `Unsafe Login. Please contact kefu@188.com` unless the client identifies itself; servers without the extension ignore it harmlessly
+- Cron admin UI fixes: schedule detail page crashed rendering `payload` (the API returns a parsed object, the page rendered it as a React child), and the edit form blanked the params fields when the API returned an object instead of a raw JSON string — both now accept either shape
+
+- Content-type schema validation now rejects SQL reserved words for field names, relation `foreign_key`s and table names (`from`/`order`/`key`… — 154-word cross-backend list) with a rename hint at definition time, instead of failing `CREATE TABLE` with an opaque 500; route-only names (singular/plural) are exempt, and relation fields only check their derived `{name}_id` column
+
+- Integration Plane — native email inbound (`integration-imap` feature): `imap` transport connector with **mark-read** pull semantics (LOGIN → RFC 2971 `ID` identification — required by NetEase 163/126/188 before `SELECT`, otherwise "Unsafe Login"; IDLE init failures degrade to polling — 163 does not support IDLE) → `BODY.PEEK[]` UNSEEN drain → pipeline → `\Seen` only on delivered/duplicate; failures stay unseen and re-fetch, receipts idempotency absorbs the overlap; `mime`+`email` framing via `mail-parser` (RFC2047 encoded words, charsets, multipart; JSON envelope with curated fields — `message_id`/`in_reply_to`/`subject`/`from{name,address}`/`to[]`/`cc[]`/`bcc[]`/`reply_to`/`date`/`text_body`/`html_body`/attachments — plus a **`_headers` escape hatch** exposing every RFC5322 header lowercase for mapping to pick (`$._headers.list-unsubscribe` …); body-hash fallback id when Message-ID is absent); layer-stack matrix admits `pull+imap+mime+email` with `pull_semantics=mark-read` (no local cursor — the mailbox is the state); new `IMAP 邮箱` admin preset; contract test against dockerized GreenMail; e2e harness now merges the real `integration::routes()` (hand-written route table had drifted — admin PUT 405 in production while e2e stayed green)
+
+- i18n fix (production): `rust_i18n::i18n!("locales")` resolved against `CARGO_MANIFEST_DIR` (= `crates/core`), but the locale files live at the repo root — zero translations were embedded and every API message returned the raw key (`errors.bad_request`, `messages.success`). Path fixed to `../../locales`; error details now reach clients again (e.g. `bad request: credentials provided but vault sealed — set INTEGRATION_VAULT_KEY`), localized via `Accept-Language`
+- Integration admin UI: response DTOs for the whole integration admin API (`integration/dto.rs`, credentials still never echoed), ts_rs export regenerated (`frontend/sdk/src/generated/types.ts`), SDK `client.admin.integration.*` (20 methods), admin SPA `integration` sidebar group with channel management (dedicated form page: layer-stack / trust / mapping / routing sections), receipts list + trace detail (step timeline, envelope snapshot, egress chain, upsert / dry-run replay), API clients (CRUD, test-call, egress-log tab); i18n strings for all 9 admin locales
+
+- App Bundle MVP-M2 — application lifecycle platform: `.rafapp` packages (validated + sha256 hash-manifested zip, zip-slip guarded), `apps` / `app_ct_refs` / `app_licenses` tables (all three backends), full precheck conflict report with keep-data residue re-attach, 8-step materialization with a per-step persisted compensation log (undo generated at the step site; rollback / uninstall / kill -9 restart self-heal replay the same undo executor), deterministic `seed_key` upserts (options DO-NOTHING preserves user edits), drain orchestration on disable/uninstall (routes down → window → `drained:timeout` dead-letter), CAS status machine with 409 on concurrent lifecycle ops, admin API (`/api/v1/admin/apps` list/detail/install-preview/install/enable/disable/uninstall), `raisfast app pack` CLI; app CTs replay from `app_ct_refs` at startup (three-source registry rebuild), app plugins materialize namespaced under `extensions/plugins/{app_id}/{name}` (plugin loader now scans one nested level)
+
+- Integration Plane M1.5 — verification layer: `hmac-sha256` gains `encoding: hex|base64/base64url` (Shopify/GitHub/WhatsApp shapes); new `wechat-aes` verify kind (WeChat Work / Official Account encrypted callbacks: SHA1 composite signature + AES-256-CBC decrypt, plaintext replaces the pipeline body, GET echostr challenge); decrypted-verifier outcome wired through the push pipeline; push endpoint now forwards the query string (signature params live there)
+
+- TLS hardening: install the rustls `ring` CryptoProvider at startup — the dependency tree pulls both `ring` and `aws-lc-rs`, and the first real TLS handshake (wss egress) would panic without an explicit default
+- Integration Plane — `pb-frame` framing (pbbp2 protobuf envelope via prost: config-driven heartbeat / fragment reassembly / event dispatch / in-connection ack) and generic `pre_connect` (exchange a static endpoint for a dynamic WS URL over HTTP); reference deployment: Feishu long-connection bot (`dev-docs/integration/feishu-ws.md`)
+- Integration Plane — generic long-connection gateway support: `dispatch` framing (declarative protocol profile: handshake templates with `{{token}}`/grant vars, conn-ack validation, server-ping→client-pong heartbeat, matcher-based event dispatch), `oauth-cc` credentials (cached client-credentials tokens shared by inbound handshakes and outbound api-clients), mapping `as_json([$.path])` pipe for string-in-string JSON envelopes (Feishu/DingTalk-style IM content); connectors now unseal credentials via `ConnectionSink` instead of the process-wide handle
+- Integration Plane MVP-M1 — LLM auto-reply: `support.autoreply` job handler (contact merge by channel+sender, open-conversation reuse, user-message linking, context window, `call_api_traced` LLM call, assistant message + `integration.message` SSE); `route_extra.jobs[].max_attempts` honored on enqueue; failure → conversation `pending` (human takeover) + `integration.autoreply_failed` alert
+- Cross-db fix (production): CT repository filter params bind as text — integer-column filters now cast via `Driver::cast_int` (PostgreSQL `bigint = text` rejection)
+- Integration Plane M0 — declarative outbound egress: `itg_api_clients` / `itg_egress_log` tables (all three backends), `integration.call_api()` / `call_api_traced()` entry points (op template rendering, bearer / api-key-header auth from sealed vault credentials, per-client rate limit, 20s timeout, full call log with trace_id / tokens / model)
+- Plugin host API `callApi(clientKey, op, input)` across JS / Rhai / Lua / WASM (new `egress` permission in plugin manifest gates allowed client keys); ambient TRACE_CTX attaches automatically
+- Admin API: `/api/v1/admin/integration/api-clients` CRUD + `test-call`, `/api/v1/admin/integration/egress-log`, receipts `{id}/trace` now joins egress calls
+- `integration.egress_cleanup` cron handler (retention via `INTEGRATION_EGRESS_LOG_RETENTION_DAYS`, default 90)
+- Event prefix unified: `ingress.received` → `integration.received` (SSE consumers should filter `integration.*`)
+
+## [0.4.1] - 2026-08-19
+
+- Update adminui
+
+## [0.4.0] - 2026-08-19
+
+- Expose product_id (slug preferred) in cart items for storefront links
+
+- Expect main as local branch
+
+- Type-driven SnowflakeId & Price across all layers
+
+- Update ecommerce process
+
+## [0.3.19] - 2026-08-18
+
+- Improve ci process
+
+## [0.3.18] - 2026-08-18
+
+- Update readme
+
+- Update readme
+
+- Update readme
+
+- Update readme
+
+- Update readme
+
+- Update readme
+
+- Update user permission
+
+## [0.3.17] - 2026-08-17
+
+- Fix docker workflow: clobber release downloads and pin metadata ref for dispatch runs
+
+- Use raw tags from resolved release tag for dispatch runs
+
+- Improve app new command, update readme
+
+## [0.3.16] - 2026-08-14
+
+- Improve ci process
+
+## [0.3.15] - 2026-08-14
+
+- Improve ci process
+
+## [0.3.14] - 2026-08-14
+
+- Improve ci process
+
+## [0.3.13] - 2026-08-13
+
+- Improve ci process
+
+## [0.3.12] - 2026-08-13
+
+- Improve ci process
+
+## [0.3.11] - 2026-08-13
+
+- Improve ci process
+
+## [0.3.10] - 2026-08-13
+
+- Improve ci process
+
+## [0.3.9] - 2026-08-13
+
+- Improve ci process
+
+## [0.3.8] - 2026-08-13
+
+- Add content-types backup scripts, update user remvoe logic
+
+- New feature
+
+## [0.3.7] - 2026-08-11
+
+- Update export types
+
+- Improve github workflows
+
+## [0.3.6] - 2026-08-11
+
+- Update readme
+
+- Update readme
+
+- Add content-security-policy middleware
+
+## [0.3.5] - 2026-08-11
+
+- Improve github workflows
+
+## [0.3.4] - 2026-08-11
+
+- Resolve actions error
+
+## [0.3.3] - 2026-08-11
+
+- Resolve actions error
+
+## [0.3.2] - 2026-08-11
+
+- Resolve actions error
+
+## [0.3.0] - 2026-08-10
+
+- Major update, product posts payment and detail improve
+
+- Add tunnel, add device doe
+
+- Refactor api tokens auth
+
+- Update api tokens
+
+- Refactoring permission verfication logic
+
+- Refactor permissions, support multiple roles
+
+- Improve permissions function
+
+- Content types support grouping
+
+- Update content types use group
+
+- Refactoring project directory structure using workspace
+
+- Add mcp server
+
+- Improve mcp structure
+
+- Fix permission verification vulnerability
+
+- Content types add batch operation
+
+- Improve content types file type
+
+- Improve content tyeps medis and blob field
+
+- Enhance content types
+
+- Enhance content types
+
+- Resolve postgres compatibility issues
+
+- Improve mysql worker, add  visibility timeout sweeper
+
+- Improve event register
+
+- Clear aspects and simplify the architecture
+
+- Improve UserRole enum, improve rbac, update webhook
+
+- Improve cron handler
+
+- Refactoring cron system
+
+- Add system script cron
+
+- Resolve sql compbatibility
+
+- Resolve sql compatibility
+
+- Modify json fields
+
+- All dependencies use the latest stable version
+
+- Add panic log and webhook
+
+- Improve ci process
+
+- Resolve test error
+
+- Major Update
+
+## [0.2.29] - 2026-06-02
+
+- Resolve fmt error
+
+## [0.2.28] - 2026-06-02
+
+- Udate admin stats, product category
+
+- Document update
+
+## [0.2.27] - 2026-05-31
+
+- Ci workflows error
+
+## [0.2.26] - 2026-05-31
+
+- Add product_categories, refactor export typescript sdk
+
+- Update export typescript
+
+- Improve ecommerce system, add comments, coupon, shipping templates
+
+- Add user cli, improve ecommerce
+
+- Improve ecommerce system
+
+## [0.2.25] - 2026-05-27
+
+- Posts admin api
+
+- Compile parameter optimization
+
+## [0.2.24] - 2026-05-25
+
+- Optimize the process
+
+- Optimize the process
+
+- Optimize the process
+
+- Worker batch size, docs: update readme
+
+- -m
+
+## [0.2.23] - 2026-05-23
+
+- Optimize the process
+
+## [0.2.22] - 2026-05-23
+
+- Optimize the process
+
+## [0.2.21] - 2026-05-23
+
+- Optimize the process
+
+## [0.2.20] - 2026-05-23
+
+- Optimize the process
+
+- Update readme
+
+## [0.2.19] - 2026-05-23
+
+- Improve ci workflow
+
+## [0.2.18] - 2026-05-22
+
+- Improve ci workflow
+
+## [0.2.16] - 2026-05-22
+
+- Add docker ci workflow
+
+- Add npm ci workflow
+
+- Update crates ci workflow
+
+- Update ci workflow
+
+## [0.2.15] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.14] - 2026-05-22
+
+- Optimize the release process
+
+- Optimize the release process
+
+## [0.2.12] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.11] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.10] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.9] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.8] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.7] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.6] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.5] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.4] - 2026-05-22
+
+- Optimize the release process
+
+## [0.2.3] - 2026-05-22
+
+- Move allow-dirty to dist-workspace.toml
+
+## [0.2.2] - 2026-05-22
+
+- Move allow-dirty to dist-workspace.toml
+
+## [0.2.1] - 2026-05-22
+
+- Allow dirty ci for cargo-dist
+
+## [0.2.0] - 2026-05-22
+
+- Major update,  add content-types system, tenant system
+
+- Detail optimization
+
+- Add audit_log webhook
+
+- Web page update, unified timezone
+
+- Add unified extensions architecture
+
+- Add ecommerce extension
+
+- Add protected_tables, content_types and plugins db transaction
+
+- Performance and security optimization
+
+- Add workflow system, and optimization
+
+- Add storage system
+
+- Use new mod specification
+
+- Implement commerce pages
+
+- Web i18n
+
+- Web update
+
+- Optimize performance using plugin pool
+
+- Performance optimization and wasm plugin refactor
+
+- Add api rule engine
+
+- Add oauth accounts, email sms notify
+
+- Add forum extensions
+
+- Improve forum
+
+- Improve extensions
+
+- Add tauri backend support
+
+- Add crm extensions
+
+- Add pages blocks system
+
+- Cancel extensions design
+
+- Extract sdk architecture
+
+- Improve content types details
+
+- Add aspects architecture
+
+- Add protocols architecture, improve aspects design
+
+- System builtin table access to aspects and protocols
+
+- Unified auth user
+
+- Improve protocols and details update
+
+- Design frontend sdk
+
+- Improve frontend sdk
+
+- Improve plugin sdk
+
+- Update plugin sdk
+
+- Unfied vfs function naming
+
+- Improve aop layer
+
+- Security upgrade
+
+- Change the project to official name
+
+- Details update
+
+- Detail optimization
+
+- Refactor plugin concurrency archietcture
+
+- Plugin details update, and security optimization
+
+- Detail update
+
+- Extreme performance optimization
+
+- Protocols architecture upgrade
+
+- Protocols upgrade
+
+- Improve protocols
+
+- Improve protocols details
+
+- Project structure optimization
+
+- Embed admin ui
+
+- Multi database support enhancement
+
+- Optimize sql and fix injection vulnerablitities
+
+- Fix sql fields not using key keyword
+
+- Unified refactoring of ID scheme, self increment int ID as primary key and uuid v7 as business ID
+
+- Unified constants eliminate hard coding in code
+
+- Program structure and id optimization
+
+- Program structure improve
+
+- Improve testing code
+
+- Increase test coverage and refactor workflow
+
+- Add rhai plugin engine
+
+- Improve rhai plugin
+
+- Optimization file directory storage
+
+- Optimization of database table field types
+
+- Unified time field is process by the application layer
+
+- Unified update of data table fields
+
+- Data table fields update
+
+- Add ServiceRegistry
+
+- Refactor router schema
+
+- Admin api fix, add batch api
+
+- Api url update
+
+- Db transaction
+
+- User auth unified upgrade
+
+- Add user table social_links and metadata fields
+
+- Add wallet system
+
+- Improve wallet details
+
+- Add wallet transaction list api
+
+- Imporve last insert id
+
+- Add currency database, wallet security reinforcement
+
+- Unif date table enum fields
+
+- Improve enum fields
+
+- Improve enum fields
+
+- Ultimate security reinforcement
+
+- Improve frontend sdk
+
+- Refactor frontend sdk
+
+- Frontend sdk upgrade
+
+- Update LICENSE to apache2.0
+
+- Translate annotations into english
+
+- Add product order module
+
+- Add unified payment framework
+
+- Payment details upgrade
+
+- Optimize enum fields related to payment
+
+- Add dodo payments provider
+
+- Add payment routing, support auto and manual provider assignment
+
+- Optimization too may arguments using commands
+
+- Error schema reinforcement
+
+- Support two api url styles, restful and traditional
+
+- Update content types api styles, improve frontend sdk for support multi api styles
+
+- Improve frontend sdk to adapt to wallet payment orders
+
+- Add proxy module, add builtin domain aspects
+
+- Refactor servers layer
+
+- Refactor event layer
+
+- Refactor servers layer
+
+- Refactor audit log
+
+- Add service macro and repository macro
+
+- Add test macro
+
+- Remove repository layer
+
+- Overall detail security and performance optimization
+
+- Detail optimization
+
+- Optimizing data table insert operation using macr
+
+- Fully utilize Macro to simplify the curve operation of models
+
+- Optimizing models crud operations with proc macro
+
+- Optimize proc macro
+
+- Optimize crud proc macro
+
+- Update content types relationship processing
+
+- Improve the ecommerce system table
+
+- Add database crud operation function to plugin system
+
+- Unified refactoring id, using snowflake algorithm id
+
+- Improve snowflakeid detail
+
+- Refactor content types datetime fields
+
+- Multi database compatibility optimization
+
+- Database compatibility design refactoring
+
+- Improve crud derive
+
+- Refactoring the crud macro and using the new where dsl syntax
+
+- Improve crud macro
+
+- Add database migration rollback logic, improve db backup
+
+- Update database backup cli
+
+- Improve crud macro
+
+- Security hardening
+
+- Improve auth detail, validate update
+
+- SnowflakeId encryption optimization
+
+- Final performance optimization
+
+- Separate
+
+- Transfer development documents
+
+- Document update
+
+- Add Architecture document, add adminui
+
+- Modify embedding path of adminui
+
+- Github ci update
+
+- Github ci update
+
+- Github ci update
+
+## [1.0.0] - 2026-04-14
+
+- Initial rust blog
+
+- Performance and security optimization
+
+- Add plugin system, performance optimization
+
+- Fix sql injection issue
+
+- Support multiple database
+
+- Update plugin system
+
+- Write log file, update plugin
+
+- Add rquickjs plugin system and mlua plugin system
+
+- Optimize plugin architecture
+
+- Plugin update
+
+- Implement eventbus system
+
+- Add task system, cron system
+
+- Worker update
+
+- Sql compilation optimization
+
+- Add Repository layer
+
+- Add sse logic
+
+- Add sse test
+
+- Add Tantivy search
+
+- Update tantivy search
+
+- Security update
+
+<!-- generated by git-cliff -->

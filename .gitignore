@@ -1,0 +1,9 @@
+# Rust build output (any crate in the repo)
+**/target/
+
+# raisfast (vendored): upstream prebuilt binaries — we always build from source
+backend/raisfast/dist/
+
+# raisfast (vendored): upstream test-coverage reports
+backend/raisfast/cov.json
+backend/raisfast/lcov.info

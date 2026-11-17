@@ -1,0 +1,34 @@
+use crate::types::snowflake_id::SnowflakeId;
+use serde::Serialize;
+#[cfg(feature = "export-types")]
+use ts_rs::TS;
+use utoipa::ToSchema;
+
+use crate::models::tenant::Tenant;
+
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TenantResponse {
+    pub id: SnowflakeId,
+    pub name: String,
+    pub domain: Option<String>,
+    pub status: String,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub config: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl TenantResponse {
+    pub fn from_tenant(t: Tenant) -> Self {
+        Self {
+            id: t.id,
+            name: t.name,
+            domain: t.domain,
+            status: t.status.to_string(),
+            config: Some(t.config),
+            created_at: t.created_at.to_rfc3339(),
+            updated_at: t.updated_at.to_rfc3339(),
+        }
+    }
+}

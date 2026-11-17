@@ -1,0 +1,88 @@
+[content_type]
+name = "Forum Board"
+singular = "board"
+plural = "boards"
+table = "forum_boards"
+group = "forum"
+description = "Forum boards"
+implements = ["ownable", "timestampable"]
+slug_field = "name"
+
+[fields.name]
+type = "text"
+required = true
+max_length = 100
+label = "Board Name"
+
+[fields.slug]
+type = "uid"
+unique = true
+label = "URL Slug"
+
+[fields.description]
+type = "text"
+max_length = 500
+label = "Description"
+
+[fields.icon]
+type = "media"
+accept = ["image/*"]
+max_count = 1
+label = "Icon"
+
+[fields.parent]
+type = "relation"
+relation_type = "many_to_one"
+target = "forum_boards"
+foreign_key = "parent_id"
+label = "Parent Board"
+
+[fields.sort_order]
+type = "integer"
+default = 0
+min = 0
+label = "Sort Order"
+
+[fields.topic_count]
+type = "integer"
+default = 0
+private = true
+label = "Topic Count"
+
+[fields.post_count]
+type = "integer"
+default = 0
+private = true
+label = "Post Count"
+
+[fields.last_activity_at]
+type = "datetime"
+label = "Last Activity At"
+
+[fields.last_topic_id]
+type = "text"
+label = "Last Topic ID"
+
+[[indexes]]
+fields = ["slug"]
+unique = true
+
+[[indexes]]
+fields = ["parent_id", "sort_order"]
+
+[api.list]
+access = "public"
+cache = true
+
+[api.get]
+access = "public"
+cache = true
+
+[api.create]
+access = "admin"
+
+[api.update]
+access = "admin"
+
+[api.delete]
+access = "admin"

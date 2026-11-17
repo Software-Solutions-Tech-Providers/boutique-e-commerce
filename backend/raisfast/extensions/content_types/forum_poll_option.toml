@@ -1,0 +1,54 @@
+[content_type]
+name = "Forum Poll Option"
+singular = "poll_option"
+plural = "poll_options"
+table = "forum_poll_options"
+group = "forum"
+description = "Poll options"
+implements = ["ownable", "timestampable"]
+
+[fields.poll]
+type = "relation"
+relation_type = "many_to_one"
+target = "forum_polls"
+foreign_key = "poll_id"
+required = true
+immutable = true
+label = "Poll"
+
+[fields.text]
+type = "text"
+required = true
+max_length = 200
+label = "Option Text"
+
+[fields.vote_count]
+type = "integer"
+default = 0
+private = true
+label = "Vote Count"
+
+[fields.sort_order]
+type = "integer"
+default = 0
+label = "Sort Order"
+
+[[indexes]]
+fields = ["poll_id", "sort_order"]
+
+[api.list]
+access = "public"
+cache = true
+
+[api.get]
+access = "public"
+cache = true
+
+[api.create]
+access = "admin"
+
+[api.update]
+access = "admin"
+
+[api.delete]
+access = "admin"

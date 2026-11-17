@@ -1,0 +1,280 @@
+use axum::Json;
+use axum::extract::{Path, Query, State};
+
+use crate::dto::{
+    BatchRequest, BatchResponse, CreateProductCategoryRequest, ProductCategoryResponse,
+    UpdateProductCategoryRequest,
+};
+use crate::errors::app_error::AppResult;
+use crate::errors::response::{ApiResponse, PaginatedData};
+use crate::errors::validation;
+use crate::middleware::auth::AuthUser;
+use crate::utils::pagination::PaginationParams;
+
+pub fn routes(
+    registry: &mut crate::server::RouteRegistry,
+    config: &crate::config::app::AppConfig,
+) -> axum::Router<crate::AppState> {
+    let restful = config.api_restful;
+    let r = axum::Router::new();
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/product-categories",
+        get,
+        self::list,
+        "ecommerce",
+        "product-categories",
+        "public"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/product-categories",
+        create,
+        self::create,
+        "ecommerce",
+        "product-categories",
+        "product_categories:create"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/product-categories/{id}",
+        get,
+        self::get,
+        "ecommerce",
+        "product-categories",
+        "public"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/product-categories/{id}",
+        put,
+        update,
+        "ecommerce",
+        "product-categories",
+        "product_categories:update"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/product-categories/{id}",
+        delete,
+        self::delete,
+        "ecommerce",
+        "product-categories",
+        "product_categories:delete"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/product-categories",
+        get,
+        admin_list,
+        "ecommerce",
+        "admin/product-categories",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/product-categories",
+        create,
+        admin_create,
+        "ecommerce",
+        "admin/product-categories",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/product-categories/{id}",
+        put,
+        admin_update,
+        "ecommerce",
+        "admin/product-categories",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/product-categories/{id}",
+        delete,
+        admin_delete,
+        "ecommerce",
+        "admin/product-categories",
+        "admin"
+    );
+    reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/product-categories/batch",
+        post,
+        admin_batch,
+        "ecommerce",
+        "admin/product-categories",
+        "admin"
+    )
+}
+
+pub async fn list(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Query(mut params): Query<PaginationParams>,
+) -> AppResult<ApiResponse<PaginatedData<ProductCategoryResponse>>> {
+    params.sanitize();
+    let (items, total) = state
+        .product_category_service
+        .list_paginated(&auth, params.page, params.page_size)
+        .await?;
+    let items: Vec<ProductCategoryResponse> = items
+        .into_iter()
+        .map(ProductCategoryResponse::from_category)
+        .collect();
+    Ok(params.paginate(items, total))
+}
+
+pub async fn get(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<ProductCategoryResponse>> {
+    let id = crate::types::snowflake_id::parse_id(&id)?;
+    let cat = state.product_category_service.get(id, &auth).await?;
+    Ok(ApiResponse::success(
+        ProductCategoryResponse::from_category(cat),
+    ))
+}
+
+pub async fn create(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Json(req): Json<CreateProductCategoryRequest>,
+) -> AppResult<ApiResponse<ProductCategoryResponse>> {
+    validation::validate(&req)?;
+    let cat = state.product_category_service.create(&auth, req).await?;
+    Ok(ApiResponse::success(
+        ProductCategoryResponse::from_category(cat),
+    ))
+}
+
+pub async fn update(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateProductCategoryRequest>,
+) -> AppResult<ApiResponse<ProductCategoryResponse>> {
+    validation::validate(&req)?;
+    let id = crate::types::snowflake_id::parse_id(&id)?;
+    let cat = state
+        .product_category_service
+        .update(&auth, id, req)
+        .await?;
+    Ok(ApiResponse::success(
+        ProductCategoryResponse::from_category(cat),
+    ))
+}
+
+pub async fn delete(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<()>> {
+    let id = crate::types::snowflake_id::parse_id(&id)?;
+    state.product_category_service.delete(id, &auth).await?;
+    Ok(ApiResponse::success(()))
+}
+
+pub async fn admin_list(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Query(mut params): Query<PaginationParams>,
+) -> AppResult<ApiResponse<PaginatedData<ProductCategoryResponse>>> {
+    params.sanitize();
+    let (items, total) = state
+        .product_category_service
+        .list_paginated(&auth, params.page, params.page_size)
+        .await?;
+    let items: Vec<ProductCategoryResponse> = items
+        .into_iter()
+        .map(ProductCategoryResponse::from_category)
+        .collect();
+    Ok(params.paginate(items, total))
+}
+
+pub async fn admin_create(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Json(req): Json<CreateProductCategoryRequest>,
+) -> AppResult<ApiResponse<ProductCategoryResponse>> {
+    validation::validate(&req)?;
+    let cat = state.product_category_service.create(&auth, req).await?;
+    Ok(ApiResponse::success(
+        ProductCategoryResponse::from_category(cat),
+    ))
+}
+
+pub async fn admin_update(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateProductCategoryRequest>,
+) -> AppResult<ApiResponse<ProductCategoryResponse>> {
+    validation::validate(&req)?;
+    let id = crate::types::snowflake_id::parse_id(&id)?;
+    let cat = state
+        .product_category_service
+        .update(&auth, id, req)
+        .await?;
+    Ok(ApiResponse::success(
+        ProductCategoryResponse::from_category(cat),
+    ))
+}
+
+pub async fn admin_delete(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<()>> {
+    let id = crate::types::snowflake_id::parse_id(&id)?;
+    state.product_category_service.delete(id, &auth).await?;
+    Ok(ApiResponse::success(()))
+}
+
+pub async fn admin_batch(
+    auth: AuthUser,
+    State(state): State<crate::AppState>,
+    Json(req): Json<BatchRequest>,
+) -> AppResult<ApiResponse<BatchResponse>> {
+    validation::validate(&req)?;
+    let mut affected = 0usize;
+    if req.action == "delete" {
+        for raw_id in &req.ids {
+            if let Ok(id) = crate::types::snowflake_id::parse_id(raw_id)
+                && state
+                    .product_category_service
+                    .delete(id, &auth)
+                    .await
+                    .is_ok()
+            {
+                affected += 1;
+            }
+        }
+    }
+    Ok(ApiResponse::success(BatchResponse::new(
+        &req.action,
+        affected,
+    )))
+}

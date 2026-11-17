@@ -1,0 +1,56 @@
+[content_type]
+name = "Forum Poll Vote"
+singular = "poll_vote"
+plural = "poll_votes"
+table = "forum_poll_votes"
+group = "forum"
+description = "Poll vote records"
+implements = ["ownable", "timestampable"]
+
+[fields.poll]
+type = "relation"
+relation_type = "many_to_one"
+target = "forum_polls"
+foreign_key = "poll_id"
+required = true
+immutable = true
+label = "Poll"
+
+[fields.option]
+type = "relation"
+relation_type = "many_to_one"
+target = "forum_poll_options"
+foreign_key = "option_id"
+required = true
+immutable = true
+label = "Selected Option"
+
+[fields.user_id]
+type = "text"
+required = true
+immutable = true
+label = "Voter"
+
+[[indexes]]
+fields = ["option_id", "user_id"]
+unique = true
+
+[[indexes]]
+fields = ["poll_id", "user_id"]
+
+[api.list]
+access = "admin"
+cache = true
+
+[api.get]
+access = "admin"
+cache = true
+
+[api.create]
+access = "admin"
+
+[api.update]
+access = "admin"
+
+[api.delete]
+access = "admin"

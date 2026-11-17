@@ -1,0 +1,1666 @@
+//! Flow engine HTTP handlers (P1.10 minimal admin surface).
+//!
+//! Endpoints:
+//! - POST /admin/flows                    create flow + first version (definition)
+//! - GET  /admin/flows                    list flows (default tenant)
+//! - GET  /admin/flows/{id}               flow detail (incl. latest version definition)
+//! - PUT  /admin/flows/{id}               update metadata + publish new version
+//! - DELETE /admin/flows/{id}             cascade-delete flow + versions/instances
+//! - POST /admin/flows/{id}/run           create + execute an instance (inputs)
+//! - GET  /admin/flows/instances          paginated instance list (filters)
+//! - GET  /admin/flows/instances/{id}     instance status/outputs
+//! - GET  /admin/flows/instances/{id}/node-runs  per-node run history
+//! - POST /admin/flows/instances/{id}/stop  mark canceled
+//!
+//! cron/event triggers + draft/publish (explicit) land in P2.
+
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+use crate::AppState;
+use crate::config::app::AppConfig;
+use crate::db::Pool;
+use crate::errors::app_error::{AppError, AppResult};
+use crate::errors::response::ApiResponse;
+use crate::payment::crypto::{aes256gcm_decrypt, aes256gcm_encrypt};
+use crate::types::snowflake_id::SnowflakeId;
+use crate::utils::tz::Timestamp;
+
+use super::graph;
+use super::model::{self, Flow, FlowVersion};
+
+fn now() -> Timestamp {
+    crate::utils::tz::now_utc()
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize)]
+pub struct CreateFlowReq {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub definition: Value,
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize)]
+pub struct RunFlowReq {
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub inputs: Option<Value>,
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize)]
+pub struct UpdateFlowReq {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Immediate publish of this definition (legacy path).
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub definition: Option<Value>,
+    /// Save the working draft (no new version).
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub draft: Option<Value>,
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize, Default)]
+pub struct PublishFlowReq {
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub definition: Option<Value>,
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Serialize)]
+pub struct FlowDetail {
+    pub id: SnowflakeId,
+    pub tenant_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+    /// Working draft if one is saved (falls back to the latest published).
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub definition: Option<Value>,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub version_number: Option<i64>,
+    pub has_draft: bool,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+pub fn routes(
+    registry: &mut crate::server::RouteRegistry,
+    config: &crate::config::app::AppConfig,
+) -> axum::Router<crate::AppState> {
+    let restful = config.api_restful;
+    let r = axum::Router::new();
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows",
+        post,
+        create_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows",
+        get,
+        list_flows,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/page",
+        get,
+        list_flows_page,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}",
+        get,
+        get_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}",
+        put,
+        update_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}",
+        delete,
+        delete_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/run",
+        post,
+        run_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/test",
+        post,
+        test_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/publish",
+        post,
+        publish_flow,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/apis/logs",
+        get,
+        list_public_api_logs,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/apis",
+        get,
+        list_flow_apis,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/api",
+        get,
+        flow_api_status,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/api/enable",
+        post,
+        enable_flow_api,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/api/rotate",
+        post,
+        rotate_flow_api,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/api/slug",
+        post,
+        rotate_slug_api,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/api/disable",
+        post,
+        disable_flow_api,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/api/delete",
+        post,
+        delete_flow_api,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/flows/{id}/run",
+        post,
+        run_public_api,
+        "flows",
+        "public-flows",
+        "public"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/versions",
+        get,
+        list_versions,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/{id}/versions/{version}/rollback",
+        post,
+        rollback_version,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/triggers",
+        get,
+        list_flow_triggers,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/triggers",
+        post,
+        create_flow_trigger,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/triggers/{id}/enable",
+        post,
+        enable_flow_trigger,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/triggers/{id}/disable",
+        post,
+        disable_flow_trigger,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/triggers/{id}",
+        delete,
+        delete_flow_trigger,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances",
+        get,
+        list_instances,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances/{id}",
+        get,
+        get_instance,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances/{id}/node-runs",
+        get,
+        list_node_runs,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances/{id}/stop",
+        post,
+        stop_instance,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances/{id}/resume",
+        post,
+        resume_instance,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances/{id}/waiting",
+        get,
+        instance_waiting,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/flows/resume/{token}",
+        post,
+        public_resume,
+        "flows",
+        "flows/resume",
+        "public"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/flows/hooks/{callback_id}",
+        post,
+        provider_hook,
+        "flows",
+        "flows/hooks",
+        "public"
+    );
+    let r = reg_route!(
+        r,
+        registry,
+        restful,
+        "/admin/flows/instances/{id}/events",
+        get,
+        instance_events,
+        "flows",
+        "admin/flows",
+        "admin"
+    );
+    let _ = restful;
+    r
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize)]
+pub struct ResumeReq {
+    pub action: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub data: Option<Value>,
+}
+
+impl ResumeReq {
+    fn envelope(&self) -> super::nodes::ResumeEnvelope {
+        super::nodes::ResumeEnvelope {
+            action: self.action.clone(),
+            data: self.data.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListInstancesQuery {
+    #[serde(default = "default_page")]
+    pub page: i64,
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+    #[serde(default)]
+    pub flow_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub trigger: Option<String>,
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize)]
+pub struct TriggerCreateReq {
+    pub kind: String,
+    /// Flow to start: its unique name (preferred) or an id.
+    pub flow: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub event_type: Option<String>,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    #[serde(default)]
+    pub filter: Option<Value>,
+    #[serde(default)]
+    pub cron_expr: Option<String>,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    #[serde(default)]
+    pub inputs_map: Option<Value>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize)]
+pub struct TestFlowReq {
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub definition: Value,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub inputs: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct TriggerListQuery {
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_page_size() -> i64 {
+    20
+}
+
+async fn resume_instance(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    user: crate::middleware::auth::AuthUser,
+    Json(req): Json<ResumeReq>,
+) -> AppResult<ApiResponse<Value>> {
+    let instance_id = parse_id(id)?;
+    let resumed_by = user.user_id().map(crate::types::snowflake_id::SnowflakeId);
+    super::run::resume_instance(
+        &state.pool,
+        state.llm_router.clone(),
+        state.integration.clone(),
+        Some(state.plugins.clone()),
+        instance_id,
+        &req.envelope(),
+        resumed_by,
+    )
+    .await?;
+    let done = model::find_instance_by_id(&state.pool, instance_id).await?;
+    Ok(ApiResponse::success(
+        serde_json::to_value(&done).unwrap_or_default(),
+    ))
+}
+
+/// What the resume UI needs about a parked await node (kind/form/approvers),
+/// resolved from the instance's locked version — draft edits never change
+/// the contract of an in-flight approval. Mints the public resume token on
+/// first sight so the panel can hand the callback URL out.
+#[utoipa::path(get, path = "/admin/flows/instances/{id}/waiting")]
+async fn instance_waiting(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let instance_id = parse_id(id)?;
+    let mut info = super::run::waiting_info(&state.pool, instance_id).await?;
+    if let Some(node_id) = info.get("node_id").and_then(Value::as_str) {
+        let token = ensure_resume_token(&state, instance_id, node_id).await?;
+        if let Some(t) = token {
+            info["resume_path"] = Value::String(format!("/api/v1/flows/resume/{t}"));
+        }
+    }
+    Ok(ApiResponse::success(info))
+}
+
+/// C4.1 instance event stream: the global workflow.* bus filtered to one
+/// instance. Weak replay promise (C4.3): reconnecting clients should re-query
+/// the instance status — events cover the live window only.
+async fn instance_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<
+    axum::response::sse::Sse<
+        impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    >,
+> {
+    use tokio_stream::StreamExt as _;
+    let instance_id = parse_id(id)?;
+    let rx = state.eventbus.subscribe();
+    let want = instance_id.to_string();
+    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |result| {
+        let event = match result {
+            Ok(e) => e,
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                tracing::warn!("instance-events client lagged, skipped {n}");
+                return None;
+            }
+        };
+        let crate::event::Event::Custom {
+            event_type, data, ..
+        } = event.as_ref()
+        else {
+            return None;
+        };
+        if !event_type.starts_with("workflow.") {
+            return None;
+        }
+        if data.get("instance_id").and_then(Value::as_str) != Some(want.as_str()) {
+            return None;
+        }
+        let body = serde_json::to_string(data).unwrap_or_default();
+        Some(Ok(axum::response::sse::Event::default()
+            .event(event_type.clone())
+            .data(body)))
+    });
+    Ok(axum::response::sse::Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(30))
+            .text("ping"),
+    ))
+}
+
+/// Mint-once public resume token for a parked claim (n8n wait webhook /
+/// Dify recipient access_token): returns the PLAINTEXT token; stores only
+/// sha256 (lookup) + AES-GCM ciphertext (later display).
+async fn ensure_resume_token(
+    state: &AppState,
+    instance_id: SnowflakeId,
+    node_id: &str,
+) -> AppResult<Option<String>> {
+    let Some(row) = model::find_open_flow_resume(&state.pool, instance_id, node_id).await? else {
+        return Ok(None);
+    };
+    if let Some(enc) = row.token_enc.as_deref() {
+        return decrypt_token(&state.config, enc).map(Some);
+    }
+    let token = crate::utils::id::random_hex(24);
+    model::set_flow_resume_token(
+        &state.pool,
+        row.id,
+        &token_hash(&token),
+        &encrypt_token(&state.config, &token)?,
+    )
+    .await?;
+    Ok(Some(token))
+}
+
+/// Provider webhook callback (hook P1, wait-triggers.md §4): the capability
+/// callback_id IS the authorization. The parked scenario's poller translates
+/// the provider payload into a resume envelope; the claim's 409 keeps
+/// redelivery idempotent (mapped to 200 so providers stop retrying).
+///
+/// Response semantics: 200 = handled (or already handled); 400 = permanent
+/// rejection (unknown capability / untranslatable payload — providers should
+/// stop retrying); 5xx = transient (provider retries, self-healing).
+async fn provider_hook(
+    State(state): State<AppState>,
+    Path(callback_id): Path<String>,
+    body: axum::body::Bytes,
+) -> AppResult<axum::response::Response> {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let Some((row, poller)) = super::poll_infra::resolve_hook(&state.pool, &callback_id).await
+    else {
+        return Ok((StatusCode::NOT_FOUND, "unknown callback").into_response());
+    };
+    let parsed: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            // Malformed payload will never become translatable — permanent.
+            return Ok((StatusCode::BAD_REQUEST, format!("bad json: {e}")).into_response());
+        }
+    };
+    let inst = model::find_instance_by_id(&state.pool, row.instance_id).await?;
+    let Some(value) = model::find_snapshot(&state.pool, row.instance_id).await? else {
+        return Ok((StatusCode::NOT_FOUND, "no snapshot").into_response());
+    };
+    let snap: super::engine::Snapshot = serde_json::from_value(value)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("snapshot parse: {e}")))?;
+    let Some(node_id) = snap.waiting_nodes.first() else {
+        return Ok((StatusCode::NOT_FOUND, "no waiting node").into_response());
+    };
+    let info = snap
+        .node_states
+        .get(node_id)
+        .and_then(|st| st.output.as_ref())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let storage = super::exec::shared_storage()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("storage unavailable")))?;
+    let ctx = super::poll_infra::HookCtx {
+        router: state.llm_router.clone(),
+        tenant: &inst.tenant_id,
+        instance_id: row.instance_id,
+        node_id,
+        info: &info,
+        storage,
+    };
+    let Some(envelope) = (match poller.translate_hook(&ctx, &parsed).await {
+        Ok(env) => env,
+        Err(e) => {
+            // Transient translation failure — 5xx invites provider retry.
+            return Ok((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response());
+        }
+    }) else {
+        // Non-terminal event — acknowledge, keep parked.
+        return Ok((StatusCode::OK, "accepted").into_response());
+    };
+    match super::run::resume_instance(
+        &state.pool,
+        state.llm_router.clone(),
+        state.integration.clone(),
+        Some(state.plugins.clone()),
+        row.instance_id,
+        &envelope,
+        None,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(AppError::Conflict(_)) => {
+            // Racing sweep / duplicate delivery already resumed — 200 stops
+            // provider retries.
+        }
+        Err(e) => return Err(e),
+    }
+    super::events::emit(
+        row.instance_id,
+        super::events::EV_VIDEO_RESUMED,
+        serde_json::json!({
+            "node_id": node_id,
+            "resume_kind": "hook",
+            "action": envelope.action,
+        }),
+    );
+    Ok((StatusCode::OK, "ok").into_response())
+}
+
+/// Public callback resume (n8n-style): the token IS the authorization — no
+/// admin auth, no instance ids leaked. Whoever holds the URL resumes the
+/// parked node with `{action, data}`.
+async fn public_resume(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    Json(req): Json<ResumeReq>,
+) -> AppResult<Json<Value>> {
+    let Some(row) = model::find_open_by_token_hash(&state.pool, &token_hash(&token)).await? else {
+        return Err(AppError::not_found("flow_resume"));
+    };
+    super::run::resume_instance(
+        &state.pool,
+        state.llm_router.clone(),
+        state.integration.clone(),
+        Some(state.plugins.clone()),
+        row.instance_id,
+        &req.envelope(),
+        None,
+    )
+    .await?;
+    let done = model::find_instance_by_id(&state.pool, row.instance_id).await?;
+    Ok(Json(serde_json::json!({
+        "status": done.status,
+        "instance_id": done.id,
+    })))
+}
+
+/// Create a flow with its first published version (definition validated).
+async fn create_flow(
+    State(state): State<AppState>,
+    Json(req): Json<CreateFlowReq>,
+) -> AppResult<ApiResponse<Value>> {
+    // Validate graph structure + node configs up front.
+    graph::load_definition(&req.definition)?;
+
+    if model::flow_name_taken(
+        &state.pool,
+        crate::constants::DEFAULT_TENANT,
+        &req.name,
+        None,
+    )
+    .await?
+    {
+        return Err(AppError::BadRequest("同名流程已存在".into()));
+    }
+    let flow_id = crate::utils::id::new_snowflake_id();
+    let now = now();
+    let flow = Flow {
+        id: flow_id,
+        tenant_id: crate::constants::DEFAULT_TENANT.to_string(),
+        name: req.name,
+        description: req.description,
+        enabled: true,
+        current_version: None,
+        extra: None,
+        created_at: now,
+        updated_at: now,
+    };
+    model::insert_flow(&state.pool, &flow).await?;
+
+    let version_id = crate::utils::id::new_snowflake_id();
+    let version = FlowVersion {
+        id: version_id,
+        flow_id,
+        version_number: 1,
+        definition: req.definition,
+        created_by: None,
+        created_at: now,
+    };
+    model::insert_flow_version(&state.pool, &version).await?;
+    model::set_flow_current_version(&state.pool, flow_id, version_id).await?;
+
+    Ok(ApiResponse::success(json!({
+        "flow_id": flow_id,
+        "flow_version_id": version_id
+    })))
+}
+
+/// Enrich one flow row with `version_number` / `has_draft` / `has_api`.
+async fn flow_list_row(pool: &crate::db::Pool, flow: &model::Flow) -> AppResult<Value> {
+    let mut v = serde_json::to_value(flow)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize flow: {e}")))?;
+    let version_number = model::current_version_number(pool, flow.id).await?;
+    let has_draft = model::flow_draft(flow).is_some();
+    let has_api = model::find_api_key_by_flow(pool, flow.id).await?.is_some();
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "version_number".to_string(),
+            version_number.map(Into::into).unwrap_or(Value::Null),
+        );
+        obj.insert("has_draft".to_string(), json!(has_draft));
+        obj.insert("has_api".to_string(), json!(has_api));
+    }
+    Ok(v)
+}
+
+async fn list_flows(State(state): State<AppState>) -> AppResult<ApiResponse<Value>> {
+    let flows = model::find_flows_by_tenant(&state.pool, crate::constants::DEFAULT_TENANT).await?;
+    let mut items = Vec::with_capacity(flows.len());
+    for flow in flows {
+        items.push(flow_list_row(&state.pool, &flow).await?);
+    }
+    Ok(ApiResponse::success(Value::Array(items)))
+}
+
+/// Paged flows list (server-side pagination) for the admin table.
+async fn list_flows_page(
+    State(state): State<AppState>,
+    Query(q): Query<ListInstancesQuery>,
+) -> AppResult<ApiResponse<Value>> {
+    let (rows, total) = model::find_flows_page(
+        &state.pool,
+        crate::constants::DEFAULT_TENANT,
+        q.page.max(1),
+        q.page_size.clamp(1, 100),
+    )
+    .await?;
+    let mut items = Vec::with_capacity(rows.len());
+    for flow in rows {
+        items.push(flow_list_row(&state.pool, &flow).await?);
+    }
+    Ok(ApiResponse::success(json!({
+        "items": items,
+        "total": total,
+        "page": q.page.max(1),
+        "page_size": q.page_size.clamp(1, 100),
+    })))
+}
+
+/// Flow detail value: draft (if any) shadows the latest published definition.
+async fn build_detail(pool: &crate::db::Pool, flow_id: SnowflakeId) -> AppResult<Value> {
+    let flow = model::find_flow_by_id(pool, flow_id).await?;
+    let latest = model::latest_version(pool, flow_id).await?;
+    let draft = model::flow_draft(&flow);
+    let has_draft = draft.is_some();
+    let definition = draft.or_else(|| latest.as_ref().map(|v| v.definition.clone()));
+    let detail = FlowDetail {
+        id: flow.id,
+        tenant_id: flow.tenant_id,
+        name: flow.name,
+        description: flow.description,
+        enabled: flow.enabled,
+        definition,
+        version_number: latest.map(|v| v.version_number),
+        has_draft,
+        created_at: flow.created_at,
+        updated_at: flow.updated_at,
+    };
+    serde_json::to_value(&detail)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize flow detail: {e}")))
+}
+
+/// Flow detail incl. the latest published version's definition (for the editor).
+async fn get_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    Ok(ApiResponse::success(
+        build_detail(&state.pool, flow_id).await?,
+    ))
+}
+
+/// Update metadata and/or save a draft; `definition` (legacy) publishes now.
+async fn update_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateFlowReq>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    let flow = model::find_flow_by_id(&state.pool, flow_id).await?;
+
+    let name = req.name.unwrap_or_else(|| flow.name.clone());
+    if name.to_lowercase() != flow.name.to_lowercase()
+        && model::flow_name_taken(
+            &state.pool,
+            crate::constants::DEFAULT_TENANT,
+            &name,
+            Some(flow_id),
+        )
+        .await?
+    {
+        return Err(AppError::BadRequest("同名流程已存在".into()));
+    }
+    let description = req.description.or(flow.description);
+    model::update_flow_meta(&state.pool, flow_id, &name, description.as_deref()).await?;
+
+    if let Some(definition) = req.definition {
+        graph::load_definition(&definition)?;
+        let next = model::latest_version(&state.pool, flow_id)
+            .await?
+            .map(|v| v.version_number + 1)
+            .unwrap_or(1);
+        let version = FlowVersion {
+            id: crate::utils::id::new_snowflake_id(),
+            flow_id,
+            version_number: next,
+            definition,
+            created_by: None,
+            created_at: now(),
+        };
+        model::insert_flow_version(&state.pool, &version).await?;
+        model::set_flow_current_version(&state.pool, flow_id, version.id).await?;
+        model::set_flow_draft(&state.pool, flow_id, None).await?;
+    } else if let Some(draft) = req.draft {
+        graph::load_definition(&draft)?;
+        model::set_flow_draft(&state.pool, flow_id, Some(draft)).await?;
+    }
+
+    Ok(ApiResponse::success(
+        build_detail(&state.pool, flow_id).await?,
+    ))
+}
+
+/// Publish the current working draft as a new version (explicit publish).
+async fn publish_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<PublishFlowReq>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    let flow = model::find_flow_by_id(&state.pool, flow_id).await?;
+    let draft = req
+        .definition
+        .or_else(|| model::flow_draft(&flow))
+        .ok_or_else(|| AppError::BadRequest("没有可发布的草稿".into()))?;
+    graph::load_definition(&draft)?;
+    let next = model::latest_version(&state.pool, flow_id)
+        .await?
+        .map(|v| v.version_number + 1)
+        .unwrap_or(1);
+    let version = FlowVersion {
+        id: crate::utils::id::new_snowflake_id(),
+        flow_id,
+        version_number: next,
+        definition: draft,
+        created_by: None,
+        created_at: now(),
+    };
+    model::insert_flow_version(&state.pool, &version).await?;
+    model::set_flow_current_version(&state.pool, flow_id, version.id).await?;
+    model::set_flow_draft(&state.pool, flow_id, None).await?;
+    Ok(ApiResponse::success(
+        build_detail(&state.pool, flow_id).await?,
+    ))
+}
+
+/// Cascade-delete a flow and all its versions/instances.
+async fn delete_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::delete_flow(&state.pool, flow_id).await?;
+    Ok(ApiResponse::success(json!({"deleted": true})))
+}
+
+/// All published versions of a flow, oldest first.
+async fn list_versions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    let versions = model::list_versions(&state.pool, flow_id).await?;
+    Ok(ApiResponse::success(
+        serde_json::to_value(versions)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize versions: {e}")))?,
+    ))
+}
+
+/// Roll back to an older version: the selected snapshot is re-published as a
+/// new `version_number` (immutable append model) and becomes the current one.
+async fn rollback_version(
+    State(state): State<AppState>,
+    Path((flow_id_raw, version_raw)): Path<(String, String)>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(flow_id_raw)?;
+    let version_id = parse_id(version_raw)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    let old = model::find_version_by_id(&state.pool, version_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("flow_version"))?;
+    if old.flow_id != flow_id {
+        return Err(AppError::not_found("flow_version"));
+    }
+    let next = model::latest_version(&state.pool, flow_id)
+        .await?
+        .map(|v| v.version_number + 1)
+        .unwrap_or(1);
+    let new_version = FlowVersion {
+        id: crate::utils::id::new_snowflake_id(),
+        flow_id,
+        version_number: next,
+        definition: old.definition,
+        created_by: None,
+        created_at: now(),
+    };
+    model::insert_flow_version(&state.pool, &new_version).await?;
+    model::set_flow_current_version(&state.pool, flow_id, new_version.id).await?;
+    // Rolling back replaces the working draft with the restored published state.
+    model::set_flow_draft(&state.pool, flow_id, None).await?;
+    Ok(ApiResponse::success(
+        build_detail(&state.pool, flow_id).await?,
+    ))
+}
+
+fn api_endpoint(slug: &str) -> String {
+    format!("/flows/{slug}/run")
+}
+
+fn token_hash(token: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    hex::encode(h.finalize())
+}
+
+fn enc_key(cfg: &AppConfig) -> AppResult<[u8; 32]> {
+    let raw = cfg
+        .app_key
+        .as_deref()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("api key: APP_KEY 未配置")))?;
+    let bytes = BASE64
+        .decode(raw)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("api key: bad app_key b64: {e}")))?;
+    bytes
+        .try_into()
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("api key: app_key must be 32 bytes")))
+}
+
+fn encrypt_token(cfg: &AppConfig, token: &str) -> AppResult<String> {
+    aes256gcm_encrypt(token, &enc_key(cfg)?)
+}
+
+fn decrypt_token(cfg: &AppConfig, enc: &str) -> AppResult<String> {
+    aes256gcm_decrypt(enc, &enc_key(cfg)?)
+}
+
+/// Current public-API state for a flow (token + endpoint + enabled).
+async fn flow_api_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    let row = model::find_api_key_by_flow(&state.pool, flow_id).await?;
+    let token = match &row {
+        Some(r) => Some(decrypt_token(&state.config, &r.token_enc)?),
+        None => None,
+    };
+    let enabled = row.as_ref().map(|r| r.enabled).unwrap_or(false);
+    let require_auth = row.as_ref().map(|r| r.require_auth).unwrap_or(true);
+    let slug = row.as_ref().map(|r| r.slug.clone()).unwrap_or_default();
+    Ok(ApiResponse::success(json!({
+        "enabled": enabled,
+        "disabled": row.is_some() && !enabled,
+        "require_auth": require_auth,
+        "slug": slug,
+        "token": token,
+        "endpoint": api_endpoint(&slug),
+    })))
+}
+
+/// Paginated log of EXTERNAL API calls only (trigger = `api_public`).
+async fn list_public_api_logs(
+    State(state): State<AppState>,
+    Query(q): Query<ListInstancesQuery>,
+) -> AppResult<ApiResponse<Value>> {
+    let flows = model::find_flows_by_tenant(&state.pool, crate::constants::DEFAULT_TENANT).await?;
+    let name_of: std::collections::HashMap<String, String> = flows
+        .into_iter()
+        .map(|f| (f.id.to_string(), f.name))
+        .collect();
+    let flow_filter = match q.flow_id {
+        Some(raw) if !raw.is_empty() => Some(parse_id(raw)?),
+        _ => None,
+    };
+    let (rows, total) = model::find_instances_by_trigger_page(
+        &state.pool,
+        "api_public",
+        flow_filter,
+        q.page.max(1),
+        q.page_size.clamp(1, 100),
+    )
+    .await?;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|i| {
+            json!({
+                "instance_id": i.id,
+                "flow_id": i.flow_id,
+                "flow_name": name_of.get(&i.flow_id.to_string()).cloned().unwrap_or_default(),
+                "status": i.status,
+                "inputs": i.trigger_payload,
+                "error": i.error,
+                "outputs": i.outputs,
+                "started_at": i.started_at,
+                "finished_at": i.finished_at,
+                "created_at": i.created_at,
+            })
+        })
+        .collect();
+    Ok(ApiResponse::success(json!({
+        "items": items,
+        "total": total,
+        "page": q.page.max(1),
+        "page_size": q.page_size.clamp(1, 100),
+    })))
+}
+
+/// All flows that hold an API key (enabled or paused) — management list.
+async fn list_flow_apis(
+    State(state): State<AppState>,
+    Query(q): Query<ListInstancesQuery>,
+) -> AppResult<ApiResponse<Value>> {
+    let flows = model::find_flows_by_tenant(&state.pool, crate::constants::DEFAULT_TENANT).await?;
+    let mut all: Vec<Value> = Vec::new();
+    for f in flows {
+        let Some(row) = model::find_api_key_by_flow(&state.pool, f.id).await? else {
+            continue;
+        };
+        let token = decrypt_token(&state.config, &row.token_enc)?;
+        all.push(json!({
+            "flow_id": f.id,
+            "name": f.name,
+            "token": token,
+            "slug": row.slug,
+            "endpoint": api_endpoint(&row.slug),
+            "enabled": row.enabled,
+            "require_auth": row.require_auth,
+            "updated_at": f.updated_at,
+        }));
+    }
+    let total = all.len() as i64;
+    let page = q.page.max(1);
+    let page_size = q.page_size.clamp(1, 100);
+    let offset = ((page - 1) * page_size) as usize;
+    let items: Vec<Value> = all
+        .into_iter()
+        .skip(offset)
+        .take(page_size as usize)
+        .collect();
+    Ok(ApiResponse::success(json!({
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })))
+}
+
+/// Enable / re-enable a flow's public API. `require_auth=false` allows calls
+/// without a bearer token (internal networks). Keys are AES-GCM encrypted.
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Deserialize, Default)]
+pub struct EnableApiReq {
+    #[serde(default)]
+    pub require_auth: Option<bool>,
+}
+
+async fn enable_flow_api(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<EnableApiReq>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    model::latest_version(&state.pool, flow_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("先发布一个版本再开放 API".into()))?;
+
+    let require_auth = req.require_auth.unwrap_or(true);
+    let token = match model::find_api_key_by_flow(&state.pool, flow_id).await? {
+        Some(row) => {
+            model::set_api_key_enabled(&state.pool, flow_id, true).await?;
+            model::set_api_key_require_auth(&state.pool, flow_id, require_auth).await?;
+            decrypt_token(&state.config, &row.token_enc)?
+        }
+        None => {
+            let t = crate::utils::id::random_hex(24);
+            let slug = crate::utils::id::random_hex(10);
+            let enc = encrypt_token(&state.config, &t)?;
+            model::create_api_key(
+                &state.pool,
+                flow_id,
+                &token_hash(&t),
+                &enc,
+                &slug,
+                require_auth,
+            )
+            .await?;
+            t
+        }
+    };
+    let slug = model::find_api_key_by_flow(&state.pool, flow_id)
+        .await?
+        .map(|r| r.slug)
+        .unwrap_or_default();
+    Ok(ApiResponse::success(json!({
+        "enabled": true,
+        "require_auth": require_auth,
+        "token": token,
+        "slug": slug,
+        "endpoint": api_endpoint(&slug),
+    })))
+}
+
+/// Rotate the token of an existing public API (keeps slug / enabled / auth).
+async fn rotate_flow_api(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    if model::find_api_key_by_flow(&state.pool, flow_id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::not_found("flow_api"));
+    }
+    let t = crate::utils::id::random_hex(24);
+    let enc = encrypt_token(&state.config, &t)?;
+    model::update_api_key_token(&state.pool, flow_id, &token_hash(&t), &enc).await?;
+    let fresh = model::find_api_key_by_flow(&state.pool, flow_id).await?;
+    let require_auth = fresh.as_ref().map(|r| r.require_auth).unwrap_or(true);
+    let slug = fresh.map(|r| r.slug).unwrap_or_default();
+    Ok(ApiResponse::success(json!({
+        "enabled": true,
+        "require_auth": require_auth,
+        "token": t,
+        "slug": slug,
+        "endpoint": api_endpoint(&slug),
+    })))
+}
+
+/// Rotate the public path slug (keeps token / enabled / auth).
+async fn rotate_slug_api(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    if model::find_api_key_by_flow(&state.pool, flow_id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::not_found("flow_api"));
+    }
+    let slug = crate::utils::id::random_hex(10);
+    model::update_api_key_slug(&state.pool, flow_id, &slug).await?;
+    let fresh = model::find_api_key_by_flow(&state.pool, flow_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("flow_api"))?;
+    let token = decrypt_token(&state.config, &fresh.token_enc)?;
+    Ok(ApiResponse::success(json!({
+        "enabled": fresh.enabled,
+        "require_auth": fresh.require_auth,
+        "token": token,
+        "slug": fresh.slug,
+        "endpoint": api_endpoint(&fresh.slug),
+    })))
+}
+
+/// Pause a flow's public API — keeps the key so it can be resumed later.
+async fn disable_flow_api(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    if model::find_api_key_by_flow(&state.pool, flow_id)
+        .await?
+        .is_some()
+    {
+        model::set_api_key_enabled(&state.pool, flow_id, false).await?;
+    }
+    Ok(ApiResponse::success(json!({"enabled": false})))
+}
+
+/// Permanently revoke a flow's public API (key deleted, cannot resume).
+async fn delete_flow_api(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    model::delete_api_key_by_flow(&state.pool, flow_id).await?;
+    Ok(ApiResponse::success(json!({"deleted": true})))
+}
+
+async fn resolve_trigger_flow(pool: &crate::db::Pool, ident: &str) -> AppResult<model::Flow> {
+    if let Some(flow) =
+        model::find_flow_by_name(pool, crate::constants::DEFAULT_TENANT, ident).await?
+    {
+        return Ok(flow);
+    }
+    if let Ok(id) = crate::types::snowflake_id::parse_id(ident)
+        && let Ok(flow) = model::find_flow_by_id(pool, id).await
+    {
+        return Ok(flow);
+    }
+    Err(AppError::BadRequest(format!("流程不存在或未找到: {ident}")))
+}
+
+async fn list_flow_triggers(
+    State(state): State<AppState>,
+    Query(q): Query<TriggerListQuery>,
+) -> AppResult<ApiResponse<Value>> {
+    let triggers = model::list_flow_triggers(
+        &state.pool,
+        crate::constants::DEFAULT_TENANT,
+        q.kind.as_deref(),
+    )
+    .await?;
+    let flows = model::find_flows_by_tenant(&state.pool, crate::constants::DEFAULT_TENANT).await?;
+    let name_of: std::collections::HashMap<String, String> = flows
+        .into_iter()
+        .map(|f| (f.id.to_string(), f.name))
+        .collect();
+    let items: Vec<Value> = triggers
+        .into_iter()
+        .map(|t| {
+            let mut v = serde_json::to_value(&t).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "flow_name".into(),
+                    json!(
+                        name_of
+                            .get(&t.flow_id.to_string())
+                            .cloned()
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+            v
+        })
+        .collect();
+    Ok(ApiResponse::success(Value::Array(items)))
+}
+
+async fn create_flow_trigger(
+    State(state): State<AppState>,
+    Json(req): Json<TriggerCreateReq>,
+) -> AppResult<ApiResponse<Value>> {
+    if !matches!(req.kind.as_str(), "event" | "cron") {
+        return Err(AppError::BadRequest("kind 仅支持 event/cron".into()));
+    }
+    if req.kind == "event" && req.event_type.as_deref().is_none_or(str::is_empty) {
+        return Err(AppError::BadRequest("event 触发器需要 event_type".into()));
+    }
+    if req.kind == "cron" && req.cron_expr.as_deref().is_none_or(str::is_empty) {
+        return Err(AppError::BadRequest("cron 触发器需要 cron_expr".into()));
+    }
+    let flow = resolve_trigger_flow(&state.pool, &req.flow).await?;
+    let now = now();
+    let trigger = model::FlowTrigger {
+        id: crate::utils::id::new_snowflake_id(),
+        tenant_id: crate::constants::DEFAULT_TENANT.to_string(),
+        flow_id: flow.id,
+        kind: req.kind,
+        name: req.name.unwrap_or_else(|| "未命名触发".into()),
+        event_type: req.event_type,
+        filter: req.filter,
+        cron_expr: req.cron_expr,
+        inputs_map: req.inputs_map,
+        enabled: req.enabled,
+        last_triggered_at: None,
+        created_at: now,
+    };
+    model::create_flow_trigger(&state.pool, &trigger).await?;
+    Ok(ApiResponse::success(
+        serde_json::to_value(&trigger)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("serialize trigger: {e}")))?,
+    ))
+}
+
+async fn enable_flow_trigger(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let trigger_id = parse_id(id)?;
+    model::find_flow_trigger_by_id(&state.pool, trigger_id).await?;
+    model::set_flow_trigger_enabled(&state.pool, trigger_id, true).await?;
+    Ok(ApiResponse::success(json!({"enabled": true})))
+}
+
+async fn disable_flow_trigger(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let trigger_id = parse_id(id)?;
+    model::find_flow_trigger_by_id(&state.pool, trigger_id).await?;
+    model::set_flow_trigger_enabled(&state.pool, trigger_id, false).await?;
+    Ok(ApiResponse::success(json!({"enabled": false})))
+}
+
+async fn delete_flow_trigger(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let trigger_id = parse_id(id)?;
+    model::delete_flow_trigger(&state.pool, trigger_id).await?;
+    Ok(ApiResponse::success(json!({"deleted": true})))
+}
+
+/// Public invocation on `/flows/{id}/run`: locate the flow by id first, then
+/// authenticate. Flows with `require_auth=false` accept calls with no token
+/// (internal networks); otherwise `Authorization: Bearer <token>` is required.
+/// Only the latest published version is run; recorded as `trigger = api_public`.
+async fn run_public_api(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<RunFlowReq>,
+) -> AppResult<Json<Value>> {
+    let key = model::find_api_key_by_slug(&state.pool, &slug)
+        .await?
+        .ok_or_else(|| AppError::not_found("flow_api"))?;
+    if !key.enabled {
+        return Err(AppError::not_found("flow_api"));
+    }
+    let flow_id = key.flow_id;
+    model::find_flow_by_id(&state.pool, flow_id).await?;
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|s| !s.is_empty());
+    if key.require_auth {
+        let token = bearer
+            .ok_or_else(|| AppError::BadRequest("缺少 Authorization: Bearer <token>".into()))?;
+        let row = model::find_api_key_by_hash(&state.pool, &token_hash(token))
+            .await?
+            .ok_or_else(|| AppError::not_found("flow_api"))?;
+        if !row.enabled || row.flow_id != flow_id {
+            return Err(AppError::not_found("flow_api"));
+        }
+        model::touch_api_key(&state.pool, row.id).await?;
+    }
+    // Authless flows accept calls with no token; a valid token is still honored.
+    let bearer_row = if let Some(token) = bearer {
+        model::find_api_key_by_hash(&state.pool, &token_hash(token)).await?
+    } else {
+        None
+    };
+    if let Some(row) = bearer_row
+        && row.enabled
+        && row.flow_id == flow_id
+    {
+        model::touch_api_key(&state.pool, row.id).await?;
+    }
+    let instance = crate::flows::run::run_flow_latest(
+        &state.pool,
+        state.llm_router.clone(),
+        state.integration.clone(),
+        Some(state.plugins.clone()),
+        flow_id,
+        req.inputs,
+        "api_public",
+    )
+    .await?;
+    match instance.status.as_str() {
+        "success" => Ok(Json(json!({
+            "status": "succeeded",
+            "instance_id": instance.id,
+            "outputs": instance.outputs,
+        }))),
+        "waiting" => Ok(Json(json!({
+            "status": "waiting",
+            "instance_id": instance.id,
+        }))),
+        _ => Ok(Json(json!({
+            "status": "failed",
+            "instance_id": instance.id,
+            "error": instance.error,
+        }))),
+    }
+}
+
+/// Test-run the flow against an ad-hoc definition (current canvas) without
+/// publishing a version. Instance trigger = `test`.
+async fn test_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<TestFlowReq>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = parse_id(id)?;
+    let instance = crate::flows::run::run_definition_latest(
+        &state.pool,
+        state.llm_router.clone(),
+        state.integration.clone(),
+        Some(state.plugins.clone()),
+        flow_id,
+        req.definition,
+        req.inputs,
+    )
+    .await?;
+    Ok(ApiResponse::success(
+        serde_json::to_value(&instance).unwrap_or_default(),
+    ))
+}
+
+/// Admin manual run: execute the flow's latest published version.
+async fn run_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RunFlowReq>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = crate::types::snowflake_id::parse_id(&id)?;
+    let done = crate::flows::run::run_flow_latest(
+        &state.pool,
+        state.llm_router.clone(),
+        state.integration.clone(),
+        Some(state.plugins.clone()),
+        flow_id,
+        req.inputs,
+        "api",
+    )
+    .await?;
+    Ok(ApiResponse::success(
+        serde_json::to_value(&done).unwrap_or_default(),
+    ))
+}
+
+async fn get_instance(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let instance_id = parse_id(id)?;
+    let instance = model::find_instance_by_id(&state.pool, instance_id).await?;
+    Ok(ApiResponse::success(
+        serde_json::to_value(&instance).unwrap_or_default(),
+    ))
+}
+
+/// Paginated instance list with optional `flow_id` / `status` filters.
+async fn list_instances(
+    State(state): State<AppState>,
+    Query(q): Query<ListInstancesQuery>,
+) -> AppResult<ApiResponse<Value>> {
+    let flow_id = match q.flow_id {
+        Some(raw) if !raw.is_empty() => Some(parse_id(raw)?),
+        _ => None,
+    };
+    let (items, total) = model::find_instances_page(
+        &state.pool,
+        flow_id,
+        q.status.as_deref(),
+        q.trigger.as_deref(),
+        q.page.max(1),
+        q.page_size.clamp(1, 100),
+    )
+    .await?;
+    Ok(ApiResponse::success(json!({
+        "items": serde_json::to_value(items).map_err(|e| AppError::Internal(anyhow::anyhow!("serialize instances: {e}")))?,
+        "total": total,
+        "page": q.page.max(1),
+        "page_size": q.page_size.clamp(1, 100),
+    })))
+}
+
+/// Per-node run history for one instance (oldest first).
+async fn list_node_runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let instance_id = parse_id(id)?;
+    // 404 when the instance itself doesn't exist.
+    model::find_instance_by_id(&state.pool, instance_id).await?;
+    let runs = model::find_node_runs(&state.pool, instance_id).await?;
+    Ok(ApiResponse::success(serde_json::to_value(runs).map_err(
+        |e| AppError::Internal(anyhow::anyhow!("serialize runs: {e}")),
+    )?))
+}
+
+async fn stop_instance(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<ApiResponse<Value>> {
+    let instance_id = parse_id(id)?;
+    model::finalize_instance(&state.pool, instance_id, "canceled", false, None, None).await?;
+    Ok(ApiResponse::success(json!({"ok": true})))
+}
+
+fn parse_id(s: String) -> AppResult<SnowflakeId> {
+    crate::types::snowflake_id::parse_id(&s)
+}
+
+#[allow(dead_code)]
+async fn _noop(_: Pool) {}

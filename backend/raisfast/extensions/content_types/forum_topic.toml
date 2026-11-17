@@ -1,0 +1,107 @@
+[content_type]
+name = "Forum Topic"
+singular = "topic"
+plural = "topics"
+table = "forum_topics"
+group = "forum"
+description = "Forum topics"
+implements = ["ownable", "timestampable"]
+slug_field = "title"
+
+[fields.title]
+type = "text"
+required = true
+max_length = 200
+label = "Title"
+
+[fields.slug]
+type = "uid"
+unique = true
+label = "URL Slug"
+
+[fields.content]
+type = "richtext"
+required = true
+label = "Content"
+
+[fields.board]
+type = "relation"
+relation_type = "many_to_one"
+target = "forum_boards"
+foreign_key = "board_id"
+required = true
+label = "Board"
+
+[fields.author_id]
+type = "text"
+required = true
+label = "Author"
+
+[fields.reply_count]
+type = "integer"
+default = 0
+private = true
+label = "Reply Count"
+
+[fields.view_count]
+type = "integer"
+default = 0
+private = true
+label = "View Count"
+
+[fields.last_reply_at]
+type = "datetime"
+label = "Last Reply At"
+
+[fields.last_reply_user_id]
+type = "text"
+label = "Last Reply User"
+
+[fields.is_pinned]
+type = "boolean"
+default = false
+label = "Pinned"
+
+[fields.is_locked]
+type = "boolean"
+default = false
+label = "Locked"
+
+[fields.is_solved]
+type = "boolean"
+default = false
+label = "Solved"
+
+[fields.tags]
+type = "text"
+max_length = 200
+label = "Tags"
+
+[[indexes]]
+fields = ["slug"]
+unique = true
+
+[[indexes]]
+fields = ["board_id", "is_pinned", "last_reply_at"]
+
+[[indexes]]
+fields = ["author_id", "created_at"]
+
+[api.list]
+access = "public"
+cache = true
+
+[api.get]
+access = "public"
+cache = false
+
+[api.create]
+access = "authed"
+
+[api.update]
+access = "authed"
+filter = "@request.auth.id == author_id || @request.auth.role == 'admin'"
+
+[api.delete]
+access = "authed"
+filter = "@request.auth.id == author_id || @request.auth.role == 'admin'"

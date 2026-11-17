@@ -1,0 +1,57 @@
+[content_type]
+name = "Forum Poll"
+singular = "poll"
+plural = "polls"
+table = "forum_polls"
+group = "forum"
+description = "Forum polls"
+implements = ["ownable", "timestampable"]
+
+[fields.topic]
+type = "relation"
+relation_type = "many_to_one"
+target = "forum_topics"
+foreign_key = "topic_id"
+required = true
+immutable = true
+label = "Topic"
+
+[fields.question]
+type = "text"
+required = true
+max_length = 500
+label = "Question"
+
+[fields.max_choices]
+type = "integer"
+required = true
+default = 1
+min = 1
+max = 20
+label = "Max Choices per User"
+
+[fields.is_closed]
+type = "boolean"
+default = false
+label = "Closed"
+
+[[indexes]]
+fields = ["topic_id"]
+unique = true
+
+[api.list]
+access = "admin"
+cache = true
+
+[api.get]
+access = "public"
+cache = false
+
+[api.create]
+access = "admin"
+
+[api.update]
+access = "admin"
+
+[api.delete]
+access = "admin"

@@ -1,0 +1,264 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index afc72a31..3ecbba79 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4428,22 +4428,6 @@ dependencies = [
+  "tower-service",
+ ]
+ 
+-[[package]]
+-name = "hyper-tls"
+-version = "0.6.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+-dependencies = [
+- "bytes",
+- "http-body-util",
+- "hyper 1.11.0",
+- "hyper-util",
+- "native-tls",
+- "tokio",
+- "tokio-native-tls",
+- "tower-service",
+-]
+-
+ [[package]]
+ name = "hyper-util"
+ version = "0.1.20"
+@@ -7612,12 +7596,10 @@ dependencies = [
+  "http-body-util",
+  "hyper 1.11.0",
+  "hyper-rustls 0.27.9",
+- "hyper-tls",
+  "hyper-util",
+  "js-sys",
+  "log",
+  "mime_guess",
+- "native-tls",
+  "percent-encoding",
+  "pin-project-lite",
+  "quinn",
+@@ -7629,7 +7611,6 @@ dependencies = [
+  "serde_urlencoded",
+  "sync_wrapper",
+  "tokio",
+- "tokio-native-tls",
+  "tokio-rustls 0.26.4",
+  "tokio-util",
+  "tower",
+diff --git a/crates/core/Cargo.toml b/crates/core/Cargo.toml
+index 4ee0e85c..cece106e 100644
+--- a/crates/core/Cargo.toml
++++ b/crates/core/Cargo.toml
+@@ -178,7 +178,10 @@ wasmtime-wasi = { version = "47", optional = true }
+ rquickjs = { version = "0.12", features = ["futures", "parallel", "loader", "macro"], optional = true }
+ mlua = { version = "0.12", features = ["lua54", "vendored", "send", "serde", "macros"], optional = true }
+ rhai = { version = "1.25", features = ["serde", "sync", "internals"], optional = true }
+-reqwest = { version = "0.13", features = ["json", "rustls", "native-tls", "form", "multipart", "query"], default-features = false }
++# PATCHED for Pi cross-build: dropped "native-tls" (OpenSSL) — rustls/ring only.
++# Safe because integration-stream / integration-imap features (the only native-tls
++# consumers) are not built for this deployment.
++reqwest = { version = "0.13", features = ["json", "rustls", "form", "multipart", "query"], default-features = false }
+ flate2 = "1"
+ tar = "0.4"
+ toml = { version = "1", features = ["preserve_order"] }
+diff --git a/crates/core/src/handlers/oauth.rs b/crates/core/src/handlers/oauth.rs
+index 4972c74f..0c546e57 100644
+--- a/crates/core/src/handlers/oauth.rs
++++ b/crates/core/src/handlers/oauth.rs
+@@ -141,26 +141,73 @@ pub async fn callback(
+     match result {
+         oauth::OAuthCallbackResult::LoginSuccess(resp) => {
+             let resp = *resp;
++            // PATCHED (security + usability):
++            // 1. postMessage was sent to "*", leaking tokens to ANY opener origin
++            //    (a malicious page could open this popup and steal the session).
++            //    Now restricted to the site's own origin (BASE_URL).
++            // 2. The admin UI's "Continue with Google" is a full-page redirect
++            //    (no opener), which upstream left at "close this tab" — never
++            //    logged in. Now we fetch /users/me, persist the session exactly
++            //    as the admin UI does (`auth-storage` + `session` cookie) and
++            //    redirect to /admin.
++            let origin = {
++                let b = state.config.base_url.trim_end_matches('/');
++                // scheme://host[:port] only
++                match b.find("://") {
++                    Some(i) => match b[i + 3..].find('/') {
++                        Some(j) => b[..i + 3 + j].to_string(),
++                        None => b.to_string(),
++                    },
++                    None => b.to_string(),
++                }
++            };
+             let html = format!(
+                 r#"<!DOCTYPE html>
+-<html><head><title>OAuth Callback</title></head><body>
++<html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Signing in…</title></head><body>
++<p id="m">Signing in…</p>
+ <script>
+ (function() {{
+-  var data = {{ access_token: "{at}", refresh_token: "{rt}", expires_in: {ei} }};
++  var at = "{at}", rt = "{rt}";
++  var ORIGIN = {origin};
+   if (window.opener) {{
+-    window.opener.postMessage({{ type: "oauth_callback", ...data }}, "*");
++    window.opener.postMessage({{ type: "oauth_callback", access_token: at, refresh_token: rt, expires_in: {ei} }}, ORIGIN);
+     window.close();
+-  }} else {{
+-    document.body.innerText = "Authentication successful. You can close this tab.";
++    return;
+   }}
++  fetch("/api/v1/users/me", {{ headers: {{ "Authorization": "Bearer " + at }} }})
++    .then(function(r) {{ return r.json(); }})
++    .then(function(j) {{
++      var u = (j && j.data) || {{}};
++      var user = {{
++        id: String(u.id),
++        email: typeof u.email === "string" ? u.email : null,
++        username: String(u.username || ""),
++        roles: Array.isArray(u.roles) ? u.roles : [],
++        avatar: typeof u.avatar === "string" ? u.avatar : null,
++        bio: typeof u.bio === "string" ? u.bio : null
++      }};
++      localStorage.setItem("auth-storage", JSON.stringify({{ state: {{ user: user, accessToken: at, refreshToken: rt }}, version: 0 }}));
++      var sec = location.protocol === "https:" ? "; Secure" : "";
++      document.cookie = "session=" + at + "; path=/; max-age=" + (3600 * 24 * 7) + "; SameSite=Lax" + sec;
++      location.replace("/admin");
++    }})
++    .catch(function() {{
++      document.getElementById("m").innerText = "Signed in, but could not load your profile. Please log in again.";
++    }});
+ }})();
+ </script>
+ </body></html>"#,
+                 at = resp.access_token,
+                 rt = resp.refresh_token,
+                 ei = resp.expires_in,
++                origin = serde_json::to_string(&origin).unwrap_or_else(|_| "\"\"".into()),
+             );
+-            Ok(axum::response::Html(html).into_response())
++            let mut response = axum::response::Html(html).into_response();
++            response.headers_mut().insert(
++                axum::http::header::CACHE_CONTROL,
++                axum::http::HeaderValue::from_static("no-store"),
++            );
++            Ok(response)
+         }
+         oauth::OAuthCallbackResult::BindingRequired { .. } => Err(AppError::BadRequest(
+             "binding required but not yet implemented".into(),
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index a7e01a7b..4e38d12c 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -453,6 +453,9 @@ pub async fn build_app_state(
+     let services = svc_builder.build();
+ 
+     let llm_router = crate::llm::service::LlmRouter::new(pool.clone()).await;
++    // PATCHED: method only exists with the JS plugin engine (service.rs gates it
++    // on `rquickjs`); the call was ungated, breaking builds without plugin-js.
++    #[cfg(feature = "rquickjs")]
+     llm_router.init_provider_extensions(config).await;
+ 
+     let kb_runtime = match crate::kb::build_kb_runtime(config, llm_router.clone()) {
+@@ -602,6 +605,7 @@ pub fn build_oauth_registry(config: &AppConfig) -> OAuthProviderRegistry {
+         registry.register(Box::new(crate::oauth::google::GoogleProvider::new(
+             google.client_id.clone(),
+             google.client_secret.clone(),
++            config.base_url.clone(),
+         )));
+         tracing::info!("OAuth provider registered: google");
+     }
+diff --git a/crates/core/src/llm/relay/auth.rs b/crates/core/src/llm/relay/auth.rs
+index 2d52c0fb..ecbdc1b9 100644
+--- a/crates/core/src/llm/relay/auth.rs
++++ b/crates/core/src/llm/relay/auth.rs
+@@ -92,9 +92,17 @@ pub async fn authenticate(pool: &Pool, bearer: &str, client_ip: &str) -> AppResu
+         }
+     };
+     // Owner user status: a banned user's tokens die with the account.
+-    if let Some(user) =
+-        crate::models::user::find_by_id(pool, token.user_id, token.tenant_id.as_deref()).await?
++    // PATCHED: a super admin (who lives in the `default` tenant) minting a key
++    // while switched into another tenant owns a key whose owner is not found by
++    // a tenant-scoped lookup, so every request 401'd. Fall back to an unscoped
++    // lookup; the active-status check below still applies.
++    let owner = match crate::models::user::find_by_id(pool, token.user_id, token.tenant_id.as_deref())
++        .await?
+     {
++        Some(u) => Some(u),
++        None => crate::models::user::find_by_id(pool, token.user_id, None).await?,
++    };
++    if let Some(user) = owner {
+         if user.status != crate::models::user::UserStatus::Active {
+             return Err(AppError::Unauthorized);
+         }
+diff --git a/crates/core/src/oauth.rs b/crates/core/src/oauth.rs
+index d50b47e9..37d30d70 100644
+--- a/crates/core/src/oauth.rs
++++ b/crates/core/src/oauth.rs
+@@ -183,7 +183,11 @@ mod tests {
+ 
+     #[test]
+     fn google_authorize_url_format() {
+-        let provider = google::GoogleProvider::new("my_client_id".into(), "secret".into());
++        let provider = google::GoogleProvider::new(
++            "my_client_id".into(),
++            "secret".into(),
++            "https://example.com".into(),
++        );
+         let url = provider.authorize_url("state123", "challenge456");
+         assert!(url.contains("client_id=my_client_id"));
+         assert!(url.contains("state=state123"));
+diff --git a/crates/core/src/oauth/google.rs b/crates/core/src/oauth/google.rs
+index 0c6f56f7..2159e6be 100644
+--- a/crates/core/src/oauth/google.rs
++++ b/crates/core/src/oauth/google.rs
+@@ -7,14 +7,24 @@ use crate::oauth::{OAuthProvider, OAuthTokenResponse, OAuthUserInfo};
+ pub struct GoogleProvider {
+     client_id: String,
+     client_secret: String,
++    /// PATCHED: Google requires `redirect_uri` on both the authorize request
++    /// and the token exchange; upstream sent neither, so every login failed.
++    redirect_uri: String,
+ }
+ 
+ impl GoogleProvider {
+-    /// Create a Google Provider
+-    pub fn new(client_id: String, client_secret: String) -> Self {
++    /// Create a Google Provider. `base_url` is the public site URL (BASE_URL);
++    /// the callback must be registered in Google Cloud Console exactly as
++    /// `{base_url}/api/v1/auth/oauth/google/callback`.
++    pub fn new(client_id: String, client_secret: String, base_url: String) -> Self {
++        let redirect_uri = format!(
++            "{}/api/v1/auth/oauth/google/callback",
++            base_url.trim_end_matches('/')
++        );
+         Self {
+             client_id,
+             client_secret,
++            redirect_uri,
+         }
+     }
+ }
+@@ -27,8 +37,11 @@ impl OAuthProvider for GoogleProvider {
+ 
+     fn authorize_url(&self, state: &str, code_challenge: &str) -> String {
+         format!(
+-            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&state={}&code_challenge={}&code_challenge_method=S256&scope=openid+email+profile&response_type=code&access_type=offline",
+-            self.client_id, state, code_challenge
++            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=openid+email+profile&response_type=code&access_type=offline",
++            self.client_id,
++            urlencoding::encode(&self.redirect_uri),
++            state,
++            code_challenge
+         )
+     }
+ 
+@@ -45,6 +58,7 @@ impl OAuthProvider for GoogleProvider {
+                 "client_secret": self.client_secret,
+                 "code": code,
+                 "code_verifier": code_verifier,
++                "redirect_uri": self.redirect_uri,
+                 "grant_type": "authorization_code",
+             }))
+             .send()

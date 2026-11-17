@@ -1,0 +1,103 @@
+[content_type]
+name = "Contact"
+singular = "contact"
+plural = "contacts"
+table = "crm_contacts"
+group = "crm"
+description = "Contacts"
+implements = ["ownable", "timestampable"]
+
+[fields.first_name]
+type = "text"
+required = true
+max_length = 100
+label = "First Name"
+
+[fields.last_name]
+type = "text"
+required = true
+max_length = 100
+label = "Last Name"
+
+[fields.email]
+type = "email"
+required = true
+unique = true
+label = "Email"
+
+[fields.phone]
+type = "text"
+label = "Phone"
+
+[fields.mobile]
+type = "text"
+label = "Mobile"
+
+[fields.job_title]
+type = "text"
+label = "Job Title"
+
+[fields.company]
+type = "relation"
+relation_type = "many_to_one"
+target = "crm_companies"
+foreign_key = "company_id"
+label = "Company"
+
+[fields.source]
+type = "enum"
+enum_values = ["website", "referral", "linkedin", "cold_call", "event", "advertisement", "other"]
+default = "other"
+label = "Source"
+
+[fields.status]
+type = "enum"
+enum_values = ["active", "inactive", "converted", "churned"]
+default = "active"
+label = "Status"
+
+[fields.lifecycle_stage]
+type = "enum"
+enum_values = ["subscriber", "lead", "marketing_qualified_lead", "sales_qualified_lead", "opportunity", "customer", "evangelist"]
+default = "lead"
+label = "Lifecycle Stage"
+
+[fields.owner_id]
+type = "text"
+label = "Owner"
+
+[fields.notes]
+type = "richtext"
+label = "Notes"
+
+[[indexes]]
+fields = ["email"]
+unique = true
+
+[[indexes]]
+fields = ["company_id"]
+
+[[indexes]]
+fields = ["owner_id", "created_at"]
+
+[[indexes]]
+fields = ["status"]
+
+[[indexes]]
+fields = ["lifecycle_stage"]
+
+[api.list]
+access = "authed"
+
+[api.get]
+access = "authed"
+
+[api.create]
+access = "authed"
+
+[api.update]
+access = "authed"
+filter = "@request.auth.id == owner_id || @request.auth.role == 'admin'"
+
+[api.delete]
+access = "admin"

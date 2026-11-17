@@ -1,0 +1,510 @@
+//! Ingress endpoints — the external face of the plane (integration.md §11).
+//!
+//! `GET  /api/v1/ingress/{channel_key}` — challenge handshake (WeChat style)
+//! `POST /api/v1/ingress/{channel_key}` — push callback entry
+//!
+//! No JWT here by design: trust comes from L0 verification (signature/token)
+//! plus a per-channel rate limit. Routes register as `public` for the
+//! permission guard.
+
+use crate::AppState;
+use crate::errors::app_error::{AppError, AppResult};
+use crate::errors::response::ApiResponse;
+use crate::integration::channel::ItgChannel;
+use crate::integration::dto::ReplayResponse;
+use crate::integration::pipeline::{AckAction, ReplayOutcome};
+use crate::integration::verify::{InboundHttpRequest, VerifyOutcome};
+use crate::middleware::auth::{AuthUser, TokenAction};
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+
+/// POST /admin/integration/receipts/{id}/replay — re-run the route from the
+/// stored envelope snapshot (§6.4). Modes: `upsert` (default) / `dry-run`.
+pub async fn replay(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> AppResult<ApiResponse<ReplayResponse>> {
+    auth.ensure_admin()?;
+    auth.ensure_scope("integration", TokenAction::Update)?;
+    let Some(plane) = state.integration.as_ref() else {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "integration plane disabled"
+        )));
+    };
+    let trace_id = crate::types::snowflake_id::parse_id(&id)?;
+    let dry_run = body
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .map(|m| m == "dry-run")
+        .unwrap_or(false);
+
+    let outcome = plane.pipeline().run_replay(trace_id, dry_run).await?;
+    let data = match outcome {
+        ReplayOutcome::Upserted { target_id } => ReplayResponse {
+            replayed: true,
+            mode: "upsert".into(),
+            target_id,
+            report: None,
+        },
+        ReplayOutcome::DryRun { report } => ReplayResponse {
+            replayed: false,
+            mode: "dry-run".into(),
+            target_id: None,
+            report: Some(report),
+        },
+    };
+    Ok(ApiResponse::success(data))
+}
+
+/// Per-channel fixed-window limiter (configurable via
+/// `channel.backpressure.per_second`; default 100 req/min). Created lazily
+/// on first request per channel key.
+#[derive(Default)]
+pub struct IngressRateLimiter {
+    inner: dashmap::DashMap<
+        String,
+        crate::middleware::rate_limit::RateLimiter<crate::middleware::rate_limit::MemoryStore>,
+    >,
+}
+
+const DEFAULT_PER_MINUTE: u32 = 100;
+
+impl IngressRateLimiter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check-and-consume one request slot for the channel.
+    #[must_use]
+    pub async fn allow(&self, channel: &ItgChannel) -> bool {
+        let per_minute = channel
+            .backpressure
+            .as_ref()
+            .and_then(|b| b.get("per_second"))
+            .and_then(serde_json::Value::as_u64)
+            .map_or(DEFAULT_PER_MINUTE, |ps| {
+                (ps * 60).min(u64::from(u32::MAX)) as u32
+            });
+        // Window 60s with `per_minute` budget — mirrors RateLimiter::new(min, window).
+        let limiter = self
+            .inner
+            .entry(channel.channel_key.clone())
+            .or_insert_with(|| {
+                crate::middleware::rate_limit::RateLimiter::new(
+                    std::sync::Arc::new(crate::middleware::rate_limit::MemoryStore::new()),
+                    crate::middleware::rate_limit::RateLimitConfig {
+                        max_requests: per_minute,
+                        window_secs: 60,
+                    },
+                )
+            });
+        limiter.check(&channel.channel_key).await
+    }
+}
+
+fn ingress_disabled() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "integration plane disabled",
+    )
+        .into_response()
+}
+
+#[allow(clippy::result_large_err)]
+async fn resolve_channel(
+    state: &AppState,
+    channel_key: &str,
+) -> Result<std::sync::Arc<ItgChannel>, Response> {
+    let Some(plane) = state.integration.as_ref() else {
+        return Err(ingress_disabled());
+    };
+    match plane
+        .channels()
+        .get(crate::constants::DEFAULT_TENANT, channel_key)
+        .await
+    {
+        Ok(ch) => Ok(ch),
+        Err(_) => Err((StatusCode::NOT_FOUND, "unknown channel").into_response()),
+    }
+}
+
+/// GET — challenge handshake verification.
+pub async fn challenge(
+    State(state): State<AppState>,
+    Path(channel_key): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let ch = match resolve_channel(&state, &channel_key).await {
+        Ok(ch) => ch,
+        Err(resp) => return resp,
+    };
+
+    let query = params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let req = InboundHttpRequest {
+        method: "GET".into(),
+        query,
+        headers: Vec::new(),
+        body: Vec::new(),
+    };
+
+    let vault = state.integration.as_ref().and_then(|p| p.vault());
+    match crate::integration::verify::verify(&ch, vault, &req, Some(&state.config.jwt_secret)) {
+        VerifyOutcome::ChallengeEcho(echo) => (StatusCode::OK, echo).into_response(),
+        VerifyOutcome::Ok | VerifyOutcome::OkDecrypted(_) | VerifyOutcome::WidgetSession { .. } => {
+            // Channel without a GET flow (e.g. hmac) — nothing to handshake.
+            (StatusCode::METHOD_NOT_ALLOWED, "no GET flow").into_response()
+        }
+        VerifyOutcome::Reject { status, reason } => {
+            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::UNAUTHORIZED);
+            (code, reason).into_response()
+        }
+    }
+}
+
+/// POST — push callback entry.
+pub async fn push(
+    State(state): State<AppState>,
+    Path(channel_key): Path<String>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(plane) = state.integration.as_ref() else {
+        return ingress_disabled();
+    };
+    let ch = match plane
+        .channels()
+        .get(crate::constants::DEFAULT_TENANT, &channel_key)
+        .await
+    {
+        Ok(ch) => ch,
+        Err(_) => return (StatusCode::NOT_FOUND, "unknown channel").into_response(),
+    };
+
+    if !plane.limiter().allow(&ch).await {
+        tracing::warn!(channel = %channel_key, "ingress rate limited");
+        return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
+    }
+
+    let limit = plane.body_limit();
+    if body.len() > limit {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds limit").into_response();
+    }
+
+    let req = InboundHttpRequest {
+        method: "POST".into(),
+        // Verifiers read signature params from the query (wechat-aes
+        // msg_signature/timestamp/nonce).
+        query: uri.query().unwrap_or_default().to_string(),
+        headers: headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|val| (k.as_str().to_ascii_lowercase(), val.to_string()))
+            })
+            .collect(),
+        body: body.to_vec(),
+    };
+
+    let outcome = plane.pipeline().run_push(&ch, &req).await;
+    match outcome.ack {
+        AckAction::Http { status, body } => {
+            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            match body {
+                Some(b) => (code, b).into_response(),
+                None => (code, "").into_response(),
+            }
+        }
+        // HTTP ingress never produces these; stream connectors consume them.
+        AckAction::RpcReply { .. } | AckAction::None => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "unexpected ack kind").into_response()
+        }
+    }
+}
+
+/// Route registration (public ingress — no RESTful aliasing; admin routes
+/// follow the server's `api_restful` config like every other module).
+pub fn routes(
+    registry: &mut crate::server::RouteRegistry,
+    config: &crate::config::app::AppConfig,
+) -> axum::Router<AppState> {
+    // Admin surface: honor the server's API style so PUT/DELETE (restful)
+    // or POST /update //delete (compat) resolve as configured.
+    let admin = config.api_restful;
+    let r = axum::Router::new();
+    let r = crate::reg_route!(
+        r,
+        registry,
+        false, // machine-facing ingress: canonical path only
+        "/ingress/{channel_key}",
+        get,
+        challenge,
+        "integration",
+        "ingress",
+        "public"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        false, // machine-facing ingress: canonical path only
+        "/ingress/{channel_key}",
+        post,
+        push,
+        "integration",
+        "ingress",
+        "public"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/receipts/{id}/replay",
+        post,
+        replay,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/receipts",
+        get,
+        crate::integration::admin::list_receipts,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/receipts/{id}",
+        get,
+        crate::integration::admin::get_receipt,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/receipts/{id}/trace",
+        get,
+        crate::integration::admin::get_trace,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels",
+        get,
+        crate::integration::admin::list_channels,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels",
+        post,
+        crate::integration::admin::create_channel,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/health",
+        get,
+        crate::integration::admin::channels_health,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/{id}",
+        get,
+        crate::integration::admin::get_channel,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/{id}/health",
+        get,
+        crate::integration::admin::channel_health,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/{id}",
+        put,
+        crate::integration::admin::update_channel,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/{id}",
+        delete,
+        crate::integration::admin::delete_channel,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/{id}/test-mapping",
+        post,
+        crate::integration::admin::test_mapping,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/channels/{id}/test-connection",
+        post,
+        crate::integration::admin::test_connection,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients",
+        get,
+        crate::integration::admin::list_api_clients,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients",
+        post,
+        crate::integration::admin::create_api_client,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}",
+        get,
+        crate::integration::admin::get_api_client,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}",
+        put,
+        crate::integration::admin::update_api_client,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}",
+        delete,
+        crate::integration::admin::delete_api_client,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}/test-call",
+        post,
+        crate::integration::admin::test_call,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/egress-log",
+        get,
+        crate::integration::admin::list_egress_log,
+        "integration",
+        "admin/integration"
+    );
+
+    // ── OAuth2 authorization-code (oauth2-egress.md §3) ─────────────
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}/oauth/start",
+        post,
+        crate::integration::oauth::oauth_start,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}/oauth/status",
+        get,
+        crate::integration::oauth::oauth_status,
+        "integration",
+        "admin/integration"
+    );
+    let r = crate::reg_route!(
+        r,
+        registry,
+        admin,
+        "/admin/integration/api-clients/{id}/oauth/revoke",
+        post,
+        crate::integration::oauth::oauth_revoke,
+        "integration",
+        "admin/integration"
+    );
+    // Public provider callback (no JWT — the state param is the CSRF).
+    crate::reg_route!(
+        r,
+        registry,
+        false,
+        "/integration/oauth/callback",
+        get,
+        crate::integration::oauth::oauth_callback,
+        "integration",
+        "integration"
+    )
+}

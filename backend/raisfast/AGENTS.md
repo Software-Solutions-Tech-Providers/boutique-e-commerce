@@ -1,0 +1,192 @@
+# AGENTS.md
+
+## Project
+
+raisfast — Rust-powered high-performance BaaS and headless CMS. Single binary, zero dependencies, zero GC. Built-in blog, ecommerce, wallet, payment & multi-tenant SaaS. JS / Rhai / Lua / WASM plugin engines for infinite extensibility.
+
+- **Crate name:** `raisfast`
+- **Rust edition:** 2024
+- **Architecture:** Handler → Service → Model three-layer
+- **Plugin engines:** JS (QuickJS) / Rhai / Lua (mlua) / WASM (wasmtime)
+- **Databases:** SQLite / PostgreSQL / MySQL (feature-gated)
+
+## Commands
+
+All common tasks are wrapped in [`justfile`](justfile) — **use `just`**, never hand-type `cargo` + env-var incantations. Run `just` (no args) to list all recipes.
+
+The default backend is **PostgreSQL**; switch with `RAISFAST_DB=sqlite|mysql just <recipe>` (or edit `db :=` in justfile).
+
+```bash
+just dev            # start dev server (online mode: SQL validated against live DB)
+just dev-watch      # dev server + auto-reload on code change
+just check          # compile check (current backend's features)
+just lint           # clippy --tests -D warnings
+just fmt            # cargo fmt
+just qa             # fmt-check + lint
+just test           # all tests (serial on PG/MySQL, parallel on SQLite)
+just test-all       # one-shot: reset test DB → regenerate sqlx cache → run all tests
+just ci             # fmt → lint → test
+just db-init        # create DB + load schema (also embeds schema into binary)
+just db-prepare     # regenerate sqlx offline cache (after changing queries)
+just db-reset       # recreate DB (destructive)
+just pg-check       # / mysql-check / sqlite-check — quick compile check per backend
+```
+
+### After changing the schema
+
+sqlx proc-macros validate against live tables at compile time, and the binary
+embeds the schema (`SCHEMA_SQL`) for first-run. After editing
+`migrations/<backend>/schema.*.sql`, reload it and rebuild:
+
+```bash
+just db-init        # loads the updated schema into the dev DB
+just check          # rebuild with fresh schema
+```
+
+### Postgres type discipline
+
+sqlx's `query!` macro type-checks binds strictly against Postgres column types
+(SQLite/MySQL accept loose binds). `crud_insert!` auto-coerces BIGINT binds via
+`crate::db::bigint::PgBigInt` (`SnowflakeId`/`i64`/`i32` and their `Option`s).
+All other binds must match exactly:
+
+- TEXT/VARCHAR → `&str`/`String`/`Option<&str>` (use `.as_deref()` on `Option<String>`)
+- enum values (`define_enum!`) → `.as_str()`
+- TIMESTAMPTZ → `DateTime<Utc>`/`Timestamp`; parse `&str` with `crate::utils::tz::parse_rfc3339*`
+- BOOLEAN → `bool` (never `0`/`1` integers)
+
+## Architecture
+
+```
+Handler → Service → Model (SQL)
+                ↘ External: Storage / Cache / Search / EventBus
+```
+
+- **src/handlers/** — axum route handlers (thin: extract params, call service, return response)
+  - Handler layer is the **only** auth entry point (`ensure_*` calls)
+- **src/services/** — business logic layer
+  - Service layer does **Policy only** (resource ownership checks), never calls `ensure_*`
+- **src/models/** — data structures and DB queries (sqlx + CRUD macros)
+  - Model provides `tx_*` variants for transaction participation
+- **src/middleware/** — JWT auth, rate limiting
+- **src/errors/** — unified `AppError` (thiserror) implementing `IntoResponse`
+- **src/config/** — env/config loading
+- **src/db/** — connection pool, SQL dialect, schema, write lock
+- **src/plugins/** — 4-engine plugin system (JS/Rhai/Lua/WASM)
+- **src/content_type/** — dynamic content type system
+- **src/worker/** — job queue + cron scheduler (infrastructure, not model layer)
+
+## Key Constraints
+
+- **`unsafe` is banned.** `#![deny(unsafe_code)]` at crate root.
+- **No `unwrap()` / `expect()`** in non-test code. Use `?` or explicit error handling.
+- **Error handling:** `thiserror` for `AppError` at handler boundaries; `anyhow` for internal service propagation.
+- **Database:** SQLite / PostgreSQL / MySQL via sqlx. Timestamps as `TIMESTAMPTZ` (PG/MySQL) or TEXT (SQLite). Always bind `DateTime<Utc>`, never strings.
+- **Cross-DB portability is mandatory.** All code must run on SQLite, PostgreSQL, and MySQL. Every SQL statement — including hand-written `sqlx::query()`, macro-generated CRUD, and test fixtures — must consider cross-database compatibility. Default to `Driver::` helpers for dialect-specific syntax (`?` vs `$N`, `MAX(a,b)` vs `GREATEST`, `AUTOINCREMENT`, `STRFTIME`, etc.). When a `Driver::` helper doesn't exist or a fundamental difference can't be abstracted, use `#[cfg(feature = "db-sqlite")]` / `#[cfg(feature = "db-postgres")]` / `#[cfg(feature = "db-mysql")]` to handle the edge case explicitly.
+- **Primary keys:** Snowflake ID (ferroid). See "SnowflakeId Encoding" below for the wire format.
+- **Auth:** JWT (HS256) with short-lived access tokens + DB-stored refresh tokens.
+- **Write lock:** All transactions go through `acquire_write()` (tokio Mutex) to serialize SQLite writes and eliminate `SQLITE_BUSY` tail latency.
+- **No design without a mature reference.** Behavioral design must not be invented from a clean slate. Every new proposal ships a **reference matrix** (in the doc/commit that introduces it): label each decision either
+  - `[照抄 <source>]` — cite the concrete file/symbol copied (e.g. `third/zeroclaw/crates/.../skill_tool.rs`), or
+  - `[自造]` — self-built, and say why no precedent applies (host-specific persistence, our BaaS shape, etc.).
+  Document-tag convention already in `dev-docs/agent/glossary.md`: `[零]` = zeroclaw-derived, `[自造]` = host-owned. Deviations from a cited reference are allowed only as an **explicitly flagged, reversible choice** (state the delta and the risk), never silently. When unsure whether a reference exists, stop and ask before proposing.
+
+## SnowflakeId Encoding (id encryption on the wire)
+
+IDs may appear to clients as encrypted base62 strings (e.g. `"aB3xKp9"`), controlled by the
+`ID_ENCODING=true` env var (`types/snowflake_id.rs`). The whole mechanism is **type-driven via
+serde** — never handle it manually:
+
+- **DTO id fields use `SnowflakeId`, not `String`.** `Serialize` emits `encode_id()` (cipher +
+  base62 when enabled, plain digits when not); `Deserialize` accepts both forms and rejects
+  garbage with a 400. This means:
+  - Response ids are automatically encoded — **never call `encode_id()` by hand** in DTO
+    constructors or `From` impls.
+  - Request ids are automatically decoded — **never call `parse_id()` on a field that is already
+    `SnowflakeId`**.
+- **`parse_id()` is only for untyped boundaries**: `Path<String>`/`Query` extracts and other raw
+  strings (admin batch `ids: Vec<String>`). Once parsed, pass `SnowflakeId` through handler →
+  service → model; do not convert back to `String` between layers.
+- **Business numbers are not ids.** Fields like `order_no`, `provider_order_id`, or
+  `provider_tx_id` are human-readable strings — keep them `String`.
+- **sqlx is unaffected**: `SnowflakeId` is a transparent newtype over `i64`; DB reads/writes stay
+  numeric. Encoding is purely the JSON wire format, so toggling `ID_ENCODING` needs no data
+  migration.
+- **Frontends are transparent**: templates echo whatever string the API returns (encoded or
+  plain) back in requests — no SDK/template logic depends on the format.
+- **OpenAPI/TS export**: `SnowflakeId` implements `utoipa::PartialSchema`/`ToSchema` and
+  `ts_rs::TS` as `string`, so schema exports don't change.
+- When adding a new DTO with id fields: declare them `SnowflakeId` (or `Option<SnowflakeId>`),
+  fill them directly from model fields (`id: row.id`), and let serde do the rest.
+
+## Price (money amounts)
+
+Money is stored internally as integer **cents** (smallest currency unit), wrapped in the `Price`
+type (`types/price.rs`) — the same type-driven pattern as `SnowflakeId`:
+
+- **DB / models / commands use `Price`, not `i64`.** `Price` is `#[sqlx(transparent)]` over `i64`,
+  so sqlx reads/writes stay numeric with zero data migration. Arithmetic stays integer (no float
+  errors) — do math on `Price.0` or convert explicitly.
+- **Wire format is yuan**: `Serialize` emits `cents ÷ 100` (a JSON number), `Deserialize` accepts
+  yuan (number or string) and multiplies by 100. The API contract is "the price a customer sees"
+  (Shopify-style) — storefronts never divide.
+- **Never convert by hand.** No `* 100` / `/ 100` at call sites, in DTO constructors, in admin
+  forms, or in `formatPrice`-style display helpers. Assign `Price` straight through:
+  `price: req.price` (request → command → model) and `price: p.price` (model → DTO). Only the
+  serde impl touches the conversion.
+- **Constructors**: `Price::from_cents(i64)` (internal unit), `Price::from_yuan(f64)`,
+  `Price::as_yuan()` (display only).
+- **Admin/storefront**: admin submits yuan (no `×100`), edit echoes the API value as-is (no `÷100`);
+  the storefront `formatPrice` only adds the currency symbol.
+- Business identifiers like `order_no`/`provider_order_id` stay `String`.
+
+## CRUD Macro System
+
+All DB operations use the Where DSL macro system (`raisfast-derive`):
+
+- `crud_insert!`, `crud_update!`, `crud_delete!` — write operations
+- `crud_find!`, `crud_find_one!`, `crud_find_all!` — read operations
+- `crud_find_page!`, `crud_join_paged!` — pagination with JOINs
+- `crud_resolve_id!`, `crud_resolve_ids!` — ID resolution
+- `in_transaction!` — transaction wrapper (auto-acquires write lock)
+
+**Auto-coercion:** Both `crud_insert!` and `crud_update!` apply schema-driven type coercion on bind values:
+- `SqlType::BigInt` → `DbBigint::to_bigint()` (converts `SnowflakeId`/`i32`/`&`/`Option` → `i64`)
+- `SqlType::Json` → `DbJson::to_json()` (converts `String`/`&str`/`Option` → `serde_json::Value`)
+
+This means callers never need to manually convert types for BIGINT or JSON columns — the macro reads the schema file, detects the column type, and wraps the bind value automatically.
+
+## Cross-Database Development Rules
+
+The project supports SQLite, PostgreSQL, and MySQL simultaneously. SQLite's "everything is TEXT" model and loose type checking hides type mismatches that PostgreSQL's strict typing will reject. Follow these rules to stay portable:
+
+1. **Placeholders** — Use `Driver::ph(N)` for all SQL placeholders. Never hardcode `?` (SQLite/MySQL) or `$N` (PostgreSQL).
+2. **Timestamps** — `.bind()` with `now_utc()` (`DateTime<Utc>`), never `now_str()` (returns `String`). PG rejects `text → TIMESTAMPTZ` implicit conversion.
+3. **Aggregates** — Wrap `COUNT(*)` and `SUM(...)` in `Driver::cast_int(...)`. PG's `SUM(bigint)` returns `numeric`; MySQL returns `DECIMAL` — both fail to decode as `i64`.
+4. **Booleans** — `.bind(true)`/`.bind(false)` for BOOLEAN columns; use `TRUE`/`FALSE` in SQL literals. Never `.bind(1_i64)` or `= 1` in SQL.
+5. **Dialect functions** — Use `Driver::` helpers (`greatest()`, `now_fn()`, `date_trunc_day()`, `auto_increment_pk()`, `cast_int()`, `cast_ts()`, `like_op()`, `current_date()`). Never hand-write dialect-specific SQL keywords.
+6. **WHERE clause placeholders** — When combining SET + WHERE (e.g., `db_update`, `db_increment`), WHERE clause placeholders must be offset by the number of SET parameters. Use `build_where_clause_with_offset(where_json, set_param_count)`.
+7. **Test data uniqueness** — Always use `crate::utils::id::new_id()` for usernames, slugs, names, etc. in test inserts. Never use fixed strings like `"testuser"` — they collide on shared databases.
+8. **Test INSERTs must include `id`** — `BIGINT PRIMARY KEY` does not auto-increment on PostgreSQL/MySQL (unlike SQLite's `INTEGER PRIMARY KEY`). Always bind an explicit `id` from `new_id()`.
+9. **Test assertions** — Never assert `COUNT(*) == N` on a shared database (accumulated data from prior tests inflates the count). Filter by unique IDs or use `>=` comparisons.
+10. **Returning clause** — MySQL does not support `RETURNING`. Use `rows_affected()` instead of `RETURNING id` for cross-database claim/dedup patterns.
+11. **JSON columns** — Use native JSON types in schema (`JSONB` on PostgreSQL, `JSON` on MySQL, `TEXT` on SQLite). Model-layer Rust types are `serde_json::Value` / `Option<serde_json::Value>`. The `crud_insert!` / `crud_update!` macros auto-coerce via `DbJson::to_json()` — callers can pass `String`, `&str`, or `serde_json::Value` and the macro handles conversion. Never call `serde_json::to_string()` before binding to a JSON column; never call `serde_json::from_str()` after reading a JSON column (the field is already `serde_json::Value`). For hand-written `sqlx::query()` (bypassing macros), bind `serde_json::Value` directly — PG's Strong param checking rejects `String` on JSONB columns at runtime.
+12. **BIGINT auto-coercion** — The `crud_insert!` / `crud_update!` macros auto-coerce values bound to BIGINT columns via `DbBigint::to_bigint()`. Callers can pass `SnowflakeId`, `i64`, `i32` (and `&` / `Option` wrappers) freely. This is not gated by dialect — it applies on all backends so the code is future-proof if sqlx tightens param checking.
+13. **Macro type coercion architecture** — `crud_insert!` uses `sqlx::query!()` (compile-time checked, Strong on PG). `crud_update!` uses `sqlx::query()` (runtime, no compile-time check) because WHERE clauses are dynamically built. Both macros apply `DbBigint` / `DbJson` coercion via schema-driven column type detection (`SqlType::BigInt` / `SqlType::Json`). When adding a new column type that needs coercion, add a variant to `SqlType`, update the parser in `crates/derive/src/schema.rs`, add a coercion trait in `crates/core/src/db/`, and wire it into the coerce logic in `crates/derive/src/crud.rs`.
+
+## Style
+
+- `cargo fmt` and `cargo clippy` are authoritative.
+- Public items require `///` doc comments.
+- Handler → Service → Model layering enforced.
+
+## External References
+
+- **Chatwoot (local docker deployment):** `/Users/chriszhong/work/www/service-robot/chatwoot-docker` — when the user mentions the Chatwoot project, look here.
+
+## Frontend Rules
+
+- **Always use official shadcn (Base UI) components first. Never hand-build components with the same name as shadcn.**
+  - Install: `npx shadcn@latest add <component>` (run in `frontend/admin/`)
+  - For custom styling, pass `className` at the call site — never modify official source in `components/ui/`
+  - If the official component doesn't fit, create a new component with a different name — never overwrite the official file

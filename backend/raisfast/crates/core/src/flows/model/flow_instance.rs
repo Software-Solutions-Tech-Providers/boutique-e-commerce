@@ -1,0 +1,313 @@
+//! flow_instance model + queries (dev-docs/workflow db-schema.md).
+//! One run (wf_trace root = id); waiting fields denormalized.
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::db::{DbDriver, Driver};
+use crate::errors::app_error::{AppError, AppResult};
+use crate::types::snowflake_id::SnowflakeId;
+use crate::utils::tz::Timestamp;
+
+const FLOW_INSTANCE_COLS: &str = "id, tenant_id, flow_id, flow_version_id, status, \
+     has_exceptions, trigger_kind, trigger_payload, inputs_summary, outputs, error, started_by, \
+     started_at, finished_at, waiting_kind, waiting_needed, waiting_received, resume_until, \
+     created_at";
+
+pub(crate) fn row_not_found(table: &str) -> AppError {
+    AppError::not_found(table)
+}
+#[cfg_attr(feature = "export-types", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct FlowInstance {
+    pub id: SnowflakeId,
+    pub tenant_id: String,
+    pub flow_id: SnowflakeId,
+    pub flow_version_id: SnowflakeId,
+    pub status: String,
+    pub has_exceptions: bool,
+    pub trigger_kind: String,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub trigger_payload: Option<Value>,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub inputs_summary: Option<Value>,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub outputs: Option<Value>,
+    #[cfg_attr(feature = "export-types", ts(type = "unknown"))]
+    pub error: Option<Value>,
+    pub started_by: Option<SnowflakeId>,
+    pub started_at: Option<Timestamp>,
+    pub finished_at: Option<Timestamp>,
+    pub waiting_kind: Option<String>,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub waiting_needed: Option<i64>,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub waiting_received: i64,
+    pub resume_until: Option<Timestamp>,
+    pub created_at: Timestamp,
+}
+
+pub async fn insert_flow_instance(pool: &crate::db::Pool, i: &FlowInstance) -> AppResult<()> {
+    let ph = (1..=19).map(Driver::ph).collect::<Vec<_>>().join(", ");
+    let sql = format!("INSERT INTO flow_instance ({FLOW_INSTANCE_COLS}) VALUES ({ph})");
+    sqlx::query(crate::db::safe_sql(&sql))
+        .bind(*i.id)
+        .bind(&i.tenant_id)
+        .bind(*i.flow_id)
+        .bind(*i.flow_version_id)
+        .bind(&i.status)
+        .bind(i.has_exceptions)
+        .bind(&i.trigger_kind)
+        .bind(&i.trigger_payload)
+        .bind(&i.inputs_summary)
+        .bind(&i.outputs)
+        .bind(&i.error)
+        .bind(i.started_by)
+        .bind(i.started_at)
+        .bind(i.finished_at)
+        .bind(&i.waiting_kind)
+        .bind(i.waiting_needed)
+        .bind(i.waiting_received)
+        .bind(i.resume_until)
+        .bind(i.created_at)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn find_instance_by_id(
+    pool: &crate::db::Pool,
+    id: SnowflakeId,
+) -> AppResult<FlowInstance> {
+    let sql = format!(
+        "SELECT {FLOW_INSTANCE_COLS} FROM flow_instance WHERE id = {}",
+        Driver::ph(1)
+    );
+    sqlx::query_as::<crate::db::pool::Db, FlowInstance>(crate::db::safe_sql(&sql))
+        .bind(*id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| row_not_found("flow_instance"))
+}
+
+/// Paged instance listing (default tenant), optionally filtered by flow/status.
+/// Returns `(rows, total)`; rows newest first.
+pub async fn find_instances_page(
+    pool: &crate::db::Pool,
+    flow_id: Option<SnowflakeId>,
+    status: Option<&str>,
+    trigger: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> AppResult<(Vec<FlowInstance>, i64)> {
+    let mut clauses = vec![format!("tenant_id = {}", Driver::ph(1))];
+    let mut next = 2usize;
+    if flow_id.is_some() {
+        clauses.push(format!("flow_id = {}", Driver::ph(next)));
+        next += 1;
+    }
+    if status.is_some() {
+        clauses.push(format!("status = {}", Driver::ph(next)));
+        next += 1;
+    }
+    if trigger.is_some() {
+        clauses.push(format!("trigger_kind = {}", Driver::ph(next)));
+        next += 1;
+    }
+    let where_sql = clauses.join(" AND ");
+
+    let total_sql = format!(
+        "SELECT {} FROM flow_instance WHERE {where_sql}",
+        Driver::cast_int("COUNT(*)")
+    );
+    let mut total_q =
+        sqlx::query_scalar::<crate::db::pool::Db, i64>(crate::db::safe_sql(&total_sql));
+    total_q = total_q.bind(crate::constants::DEFAULT_TENANT);
+    if let Some(f) = flow_id {
+        total_q = total_q.bind(*f);
+    }
+    if let Some(s) = status {
+        total_q = total_q.bind(s);
+    }
+    if let Some(t) = trigger {
+        total_q = total_q.bind(t);
+    }
+    let total = total_q.fetch_one(pool).await?;
+
+    let rows_sql = format!(
+        "SELECT {FLOW_INSTANCE_COLS} FROM flow_instance WHERE {where_sql} \
+         ORDER BY id DESC LIMIT {} OFFSET {}",
+        Driver::ph(next),
+        Driver::ph(next + 1)
+    );
+    let mut rows_q =
+        sqlx::query_as::<crate::db::pool::Db, FlowInstance>(crate::db::safe_sql(&rows_sql));
+    rows_q = rows_q.bind(crate::constants::DEFAULT_TENANT);
+    if let Some(f) = flow_id {
+        rows_q = rows_q.bind(*f);
+    }
+    if let Some(s) = status {
+        rows_q = rows_q.bind(s);
+    }
+    if let Some(t) = trigger {
+        rows_q = rows_q.bind(t);
+    }
+    let offset = (page - 1).max(0) * page_size;
+    let rows = rows_q.bind(page_size).bind(offset).fetch_all(pool).await?;
+
+    Ok((rows, total))
+}
+
+/// Paged instances created by a specific trigger kind (external API calls use
+/// `api_public`), optionally restricted to one flow, newest first.
+pub async fn find_instances_by_trigger_page(
+    pool: &crate::db::Pool,
+    trigger: &str,
+    flow_id: Option<SnowflakeId>,
+    page: i64,
+    page_size: i64,
+) -> AppResult<(Vec<FlowInstance>, i64)> {
+    let mut clauses = vec![
+        format!("tenant_id = {}", Driver::ph(1)),
+        format!("trigger_kind = {}", Driver::ph(2)),
+    ];
+    let mut next = 3usize;
+    if flow_id.is_some() {
+        clauses.push(format!("flow_id = {}", Driver::ph(next)));
+        next += 1;
+    }
+    let where_sql = clauses.join(" AND ");
+    let total_sql = format!(
+        "SELECT {} FROM flow_instance WHERE {where_sql}",
+        Driver::cast_int("COUNT(*)")
+    );
+    let mut total_q =
+        sqlx::query_scalar::<crate::db::pool::Db, i64>(crate::db::safe_sql(&total_sql));
+    total_q = total_q.bind(crate::constants::DEFAULT_TENANT).bind(trigger);
+    if let Some(f) = flow_id {
+        total_q = total_q.bind(*f);
+    }
+    let total = total_q.fetch_one(pool).await?;
+
+    let rows_sql = format!(
+        "SELECT {FLOW_INSTANCE_COLS} FROM flow_instance WHERE {where_sql} \
+         ORDER BY id DESC LIMIT {} OFFSET {}",
+        Driver::ph(next),
+        Driver::ph(next + 1)
+    );
+    let mut rows_q =
+        sqlx::query_as::<crate::db::pool::Db, FlowInstance>(crate::db::safe_sql(&rows_sql));
+    rows_q = rows_q.bind(crate::constants::DEFAULT_TENANT).bind(trigger);
+    if let Some(f) = flow_id {
+        rows_q = rows_q.bind(*f);
+    }
+    let offset = (page - 1).max(0) * page_size;
+    let rows = rows_q.bind(page_size).bind(offset).fetch_all(pool).await?;
+    Ok((rows, total))
+}
+
+/// Mark an instance parked on an await node (await-node.md §5): denormalized
+/// waiting metadata for the approval task list + timeout sweeper.
+pub async fn set_instance_waiting(
+    pool: &crate::db::Pool,
+    id: SnowflakeId,
+    waiting_kind: &str,
+    resume_until: Option<Timestamp>,
+) -> AppResult<()> {
+    let sql = format!(
+        "UPDATE flow_instance SET status = 'waiting', waiting_kind = {}, \
+         waiting_needed = 1, waiting_received = 0, resume_until = {}, finished_at = NULL \
+         WHERE id = {}",
+        Driver::ph(1),
+        Driver::ph(2),
+        Driver::ph(3)
+    );
+    sqlx::query(crate::db::safe_sql(&sql))
+        .bind(waiting_kind)
+        .bind(resume_until)
+        .bind(*id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Waiting instances of one waiting kind (media-nodes.md §5 poller feed):
+/// `video` rows parked by a video submit, indexed by (status, waiting_kind).
+pub async fn find_waiting_by_kind(
+    pool: &crate::db::Pool,
+    waiting_kind: &str,
+) -> AppResult<Vec<FlowInstance>> {
+    let sql = format!(
+        "SELECT {FLOW_INSTANCE_COLS} FROM flow_instance \
+         WHERE status = 'waiting' AND waiting_kind = {}",
+        Driver::ph(1)
+    );
+    Ok(
+        sqlx::query_as::<crate::db::pool::Db, FlowInstance>(crate::db::safe_sql(&sql))
+            .bind(waiting_kind)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+/// Update instance terminal/running status + optional finished_at.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_instance_status(
+    pool: &crate::db::Pool,
+    id: SnowflakeId,
+    status: &str,
+    has_exceptions: bool,
+    error: Option<&Value>,
+    finished_at: Option<Timestamp>,
+) -> AppResult<()> {
+    let sql = format!(
+        "UPDATE flow_instance SET status = {}, has_exceptions = {}, error = {}, \
+         finished_at = {}, waiting_kind = NULL, waiting_needed = NULL, \
+         waiting_received = 0, resume_until = NULL WHERE id = {}",
+        Driver::ph(1),
+        Driver::ph(2),
+        Driver::ph(3),
+        Driver::ph(4),
+        Driver::ph(5)
+    );
+    sqlx::query(crate::db::safe_sql(&sql))
+        .bind(status)
+        .bind(has_exceptions)
+        .bind(error)
+        .bind(finished_at)
+        .bind(*id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Finalize a finished instance (success/failed): outputs + error + finished_at.
+pub async fn finalize_instance(
+    pool: &crate::db::Pool,
+    id: SnowflakeId,
+    status: &str,
+    has_exceptions: bool,
+    outputs: Option<&Value>,
+    error: Option<&Value>,
+) -> AppResult<()> {
+    let sql = format!(
+        "UPDATE flow_instance SET status = {}, has_exceptions = {}, outputs = {}, error = {}, \
+         finished_at = {}, waiting_kind = NULL, waiting_needed = NULL, \
+         waiting_received = 0, resume_until = NULL WHERE id = {}",
+        Driver::ph(1),
+        Driver::ph(2),
+        Driver::ph(3),
+        Driver::ph(4),
+        Driver::ph(5),
+        Driver::ph(6)
+    );
+    sqlx::query(crate::db::safe_sql(&sql))
+        .bind(status)
+        .bind(has_exceptions)
+        .bind(outputs)
+        .bind(error)
+        .bind(crate::utils::tz::now_utc())
+        .bind(*id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

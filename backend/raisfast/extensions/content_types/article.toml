@@ -1,0 +1,107 @@
+[content_type]
+name = "Article"
+singular = "article"
+plural = "articles"
+table = "articles"
+description = "Blog articles"
+slug_field = "title"
+implements = [
+    "ownable",
+    "timestampable",
+]
+
+[fields.title]
+type = "text"
+required = true
+label = "Title"
+max_length = 200
+
+[fields.slug]
+type = "uid"
+unique = true
+label = "URL Slug"
+
+[fields.content]
+type = "richtext"
+required = true
+label = "Content"
+
+[fields.excerpt]
+type = "text"
+label = "Excerpt"
+max_length = 500
+
+[fields.cover_image]
+type = "media"
+label = "Cover Image"
+accept = ["image/*"]
+
+[fields.author]
+type = "relation"
+label = "Author"
+relation_type = "many_to_one"
+target = "users"
+foreign_key = "author_id"
+
+[fields.category]
+type = "relation"
+label = "Category"
+relation_type = "many_to_one"
+target = "categories"
+foreign_key = "category_id"
+
+[fields.tags]
+type = "relation"
+label = "Tags"
+relation_type = "many_to_many"
+target = "tags"
+through = "articles_tags"
+
+[fields.status]
+type = "enum"
+enum_values = ["draft", "published", "archived"]
+default = "draft"
+label = "Status"
+
+[fields.view_count]
+type = "integer"
+label = "View Count"
+default = 0
+private = true
+
+[fields.is_pinned]
+type = "boolean"
+label = "Pinned"
+default = false
+
+[[indexes]]
+fields = ["slug"]
+unique = true
+
+[[indexes]]
+fields = [
+    "status",
+    "created_at",
+]
+
+[api.list]
+access = "authed"
+filter = 'status = "published"'
+cache = true
+
+[api.get]
+access = "authed"
+filter = 'status = "published"'
+cache = true
+
+[api.create]
+access = "admin"
+cache = false
+
+[api.update]
+access = "admin"
+cache = false
+
+[api.delete]
+access = "admin"
+cache = false
