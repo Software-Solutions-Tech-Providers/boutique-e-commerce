@@ -12,6 +12,11 @@
   --color-accent: #14532D;
   --color-accent-hover: #0F3F22;
   --color-ochre: #B45309;
+  --color-sand: #C4A482;
+  --color-sand-hover: #B28F6B;
+  --color-sand-light: #F5EFEB;
+  --color-wine: #5B1B29;
+  --color-wine-hover: #45121E;
 }
 
 @layer base {
