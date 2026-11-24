@@ -21,7 +21,7 @@ export function MobileBottomNav({ onOpenVirtualTryOn }: MobileBottomNavProps) {
     const text = encodeURIComponent(
       `Hello Kora & Loom Stylist! I am exploring your handloom boutique (${window.location.href}) and have a question about fabric drape & COD.`
     );
-    window.open(`https://wa.me/919840123456?text=${text}`, '_blank');
+    window.open(`https://wa.me/918124536947?text=${text}`, '_blank');
   };
 
   return (
@@ -111,9 +111,8 @@ export function MobileBottomNav({ onOpenVirtualTryOn }: MobileBottomNavProps) {
       >
         <Link
           to="/"
-          className={`flex flex-col items-center gap-0.5 text-[11px] font-medium transition-colors ${
-            pathname === '/' ? 'text-[#14532D] font-bold' : 'text-[#57534E] hover:text-[#1C1917]'
-          }`}
+          className={`flex flex-col items-center gap-0.5 text-[11px] font-medium transition-colors ${pathname === '/' ? 'text-[#14532D] font-bold' : 'text-[#57534E] hover:text-[#1C1917]'
+            }`}
         >
           <Home className="h-4 w-4" />
           <span>Home</span>
@@ -121,9 +120,8 @@ export function MobileBottomNav({ onOpenVirtualTryOn }: MobileBottomNavProps) {
 
         <Link
           to="/collections"
-          className={`flex flex-col items-center gap-0.5 text-[11px] font-medium transition-colors ${
-            pathname.startsWith('/collections') ? 'text-[#14532D] font-bold' : 'text-[#57534E] hover:text-[#1C1917]'
-          }`}
+          className={`flex flex-col items-center gap-0.5 text-[11px] font-medium transition-colors ${pathname.startsWith('/collections') ? 'text-[#14532D] font-bold' : 'text-[#57534E] hover:text-[#1C1917]'
+            }`}
         >
           <Shirt className="h-4 w-4" />
           <span>Kora &amp; Loom</span>
@@ -139,9 +137,8 @@ export function MobileBottomNav({ onOpenVirtualTryOn }: MobileBottomNavProps) {
 
         <Link
           to="/account"
-          className={`flex flex-col items-center gap-0.5 text-[11px] font-medium transition-colors ${
-            pathname === '/account' ? 'text-[#14532D] font-bold' : 'text-[#57534E] hover:text-[#1C1917]'
-          }`}
+          className={`flex flex-col items-center gap-0.5 text-[11px] font-medium transition-colors ${pathname === '/account' ? 'text-[#14532D] font-bold' : 'text-[#57534E] hover:text-[#1C1917]'
+            }`}
         >
           <User className="h-4 w-4" />
           <span>Account</span>

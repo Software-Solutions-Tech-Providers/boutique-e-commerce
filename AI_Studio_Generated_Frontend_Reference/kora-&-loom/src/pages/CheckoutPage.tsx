@@ -118,9 +118,8 @@ export function CheckoutPage() {
                 <button
                   type="button"
                   onClick={() => setIsGuest(true)}
-                  className={`rounded px-3 py-1.5 font-semibold cursor-pointer ${
-                    isGuest ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
-                  }`}
+                  className={`rounded px-3 py-1.5 font-semibold cursor-pointer ${isGuest ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
+                    }`}
                 >
                   Guest Checkout (Fastest)
                 </button>
@@ -131,16 +130,15 @@ export function CheckoutPage() {
                     if (!user) {
                       login('ananya@example.com', 'Ananya Sundaram');
                       setName('Ananya Sundaram');
-                      setPhone('9840123456');
+                      setPhone('8124536947');
                       setEmail('ananya@example.com');
                       setAddress('18 Kasturi Ranga Road, Alwarpet');
                       setCity('Chennai');
                       setPincode('600018');
                     }
                   }}
-                  className={`rounded px-3 py-1.5 font-semibold cursor-pointer ${
-                    !isGuest ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
-                  }`}
+                  className={`rounded px-3 py-1.5 font-semibold cursor-pointer ${!isGuest ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
+                    }`}
                 >
                   {user ? `Signed in (${user.name.split(' ')[0]})` : 'Demo Sign In'}
                 </button>
@@ -290,11 +288,10 @@ export function CheckoutPage() {
                     key={method.id}
                     type="button"
                     onClick={() => setPaymentMethod(method.id)}
-                    className={`rounded-lg border p-3.5 text-left transition-colors cursor-pointer ${
-                      active
+                    className={`rounded-lg border p-3.5 text-left transition-colors cursor-pointer ${active
                         ? 'border-[#14532D] bg-[#14532D]/5 ring-1 ring-[#14532D]'
                         : 'border-[#E5E0D8] hover:border-[#57534E]'
-                    }`}
+                      }`}
                   >
                     <Icon className={`h-4 w-4 mb-2 ${active ? 'text-[#14532D]' : 'text-[#57534E]'}`} />
                     <p className="text-xs font-semibold text-[#1C1917]">{method.title}</p>
