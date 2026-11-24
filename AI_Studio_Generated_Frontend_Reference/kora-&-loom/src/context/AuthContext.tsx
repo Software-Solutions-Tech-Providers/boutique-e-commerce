@@ -53,7 +53,7 @@ const SEED_ORDERS: OrderRecord[] = [
     id: 'KL-1042',
     createdAt: '14 Nov 2026',
     customerName: 'Ananya Sundaram',
-    phone: '9840123456',
+    phone: '8124536947',
     email: 'ananya@example.com',
     address: '18 Kasturi Ranga Road, Alwarpet',
     city: 'Chennai',
@@ -263,14 +263,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         prev.map((o) =>
           o.id === orderId
             ? {
-                ...o,
-                exchangeRequested: {
-                  itemSku,
-                  reason,
-                  resolution,
-                  requestedAt: 'Just now',
-                },
-              }
+              ...o,
+              exchangeRequested: {
+                itemSku,
+                reason,
+                resolution,
+                requestedAt: 'Just now',
+              },
+            }
             : o
         )
       );
