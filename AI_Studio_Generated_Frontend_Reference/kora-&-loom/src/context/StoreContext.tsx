@@ -29,6 +29,7 @@ interface StoreContextValue {
       variant?: string;
       isSubscription?: boolean;
       tierTotalOverride?: number;
+      unitPriceOverride?: number;
       openDrawer?: boolean;
     }
   ) => void;
@@ -167,12 +168,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         variant?: string;
         isSubscription?: boolean;
         tierTotalOverride?: number;
+        unitPriceOverride?: number;
         openDrawer?: boolean;
       }
     ) => {
       const qty = options?.quantity ?? 1;
       const isSub = Boolean(options?.isSubscription && product.subscriptionOption);
-      const unitPrice = isSub && product.subscriptionOption ? product.subscriptionOption.monthlyPrice : product.price;
+      const unitPrice =
+        options?.unitPriceOverride !== undefined
+          ? options.unitPriceOverride
+          : isSub && product.subscriptionOption
+            ? product.subscriptionOption.monthlyPrice
+            : product.price;
       const chosenVariant = options?.variant ?? product.variants?.find((v) => v.inStock)?.label;
 
       setCart((prev) => {

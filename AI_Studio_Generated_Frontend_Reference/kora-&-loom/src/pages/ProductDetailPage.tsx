@@ -1,28 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowRight,
-  Check,
   CheckCircle2,
   ChevronDown,
-  CreditCard,
-  Flame,
   Heart,
   HelpCircle,
-  Info,
   Minus,
   Play,
   Plus,
-  RotateCcw,
   Ruler,
   Share2,
   ShieldCheck,
   Shirt,
-  ShoppingBag,
-  Star,
-  Truck,
 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ProductCard } from '../components/common/ProductCard';
 import { RatingStars } from '../components/common/RatingStars';
 import { SafeImage } from '../components/common/SafeImage';
 import { BackInStockModal } from '../components/product/BackInStockModal';
@@ -59,7 +49,7 @@ export function ProductDetailPage() {
   const [sizeGuideOpen, setSizeGuideOpen] = useState(false);
   const [backInStockOpen, setBackInStockOpen] = useState(false);
   const [emiModalOpen, setEmiModalOpen] = useState(false);
-  const [tryOnModalOpen, setTryOnModalOpen] = useState(false);
+  const [tryOnProduct, setTryOnProduct] = useState<typeof product | null>(null);
   const [writeReviewOpen, setWriteReviewOpen] = useState(false);
   const [showStickyBar, setShowStickyBar] = useState(false);
 
@@ -73,6 +63,7 @@ export function ProductDetailPage() {
     setSelectedVariant(product.variants?.[0]?.label);
     setPurchaseMode('once');
     setOpenAccordion('details');
+    setTryOnProduct(null);
     recordProductView(product.id);
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, [product, recordProductView]);
@@ -88,6 +79,17 @@ export function ProductDetailPage() {
     return () => observer.disconnect();
   }, [product.id]);
 
+  useEffect(() => {
+    if (showStickyBar) {
+      document.body.dataset.pdpSticky = 'true';
+    } else {
+      delete document.body.dataset.pdpSticky;
+    }
+    return () => {
+      delete document.body.dataset.pdpSticky;
+    };
+  }, [showStickyBar]);
+
   const selectedVariantObj = product.variants?.find((v) => v.label === selectedVariant);
   const isOutOfStock = Boolean(selectedVariantObj && !selectedVariantObj.inStock);
 
@@ -102,7 +104,7 @@ export function ProductDetailPage() {
   const savingsPct = discountPercent(product.price, product.mrp);
   const savingsAmount = Math.max(0, product.mrp - product.price);
   const isWishlisted = wishlistIds.includes(product.id);
-  const emiPerMonth = Math.round(product.price / 3);
+  const emiPerMonth = Math.round(effectiveDisplayPrice / 3);
 
   // Cross-sell & Pairings
   const complementaryProducts = PRODUCTS.filter((p) => product.complementaryIds.includes(p.id));
@@ -110,7 +112,7 @@ export function ProductDetailPage() {
     .filter((vid) => vid !== product.id)
     .map((vid) => PRODUCTS.find((p) => p.id === vid))
     .filter((p): p is NonNullable<typeof p> => Boolean(p))
-    .slice(0, 3);
+    .slice(0, 4);
 
   // Reviews for this product
   const productReviews = reviews.filter((r) => r.productId === product.id);
@@ -150,26 +152,35 @@ export function ProductDetailPage() {
   };
 
   return (
-    <div className="bg-[#FAF9F6] pb-24 text-[#1C1917]">
-      {/* 1. Breadcrumbs matching Screenshot 7 */}
-      <nav aria-label="Breadcrumb" className="mx-auto max-w-7xl px-4 py-3 sm:px-6 text-xs text-[#57534E] border-b border-[#E5E0D8]/60 truncate">
-        <Link to="/" className="hover:text-[#1C1917]">Home</Link>
-        <span className="mx-1.5 text-[#57534E]/60">&gt;</span>
-        <Link to="/collections" className="hover:text-[#1C1917]">Products</Link>
-        <span className="mx-1.5 text-[#57534E]/60">&gt;</span>
-        <Link to={`/collections/${product.category.toLowerCase().replace(/\s+/g, '-')}`} className="hover:text-[#1C1917]">
-          {product.category}
-        </Link>
-        <span className="mx-1.5 text-[#57534E]/60">&gt;</span>
-        <span className="text-[#1C1917] font-medium">{product.name}</span>
-      </nav>
+    <div className="bg-[#FAF9F6] pb-[calc(7.5rem+env(safe-area-inset-bottom))] md:pb-10 text-[#1C1917]">
+      {/* 1. Breadcrumbs */}
+      <div className="border-b border-[#E5E0D8]/60">
+        <nav
+          aria-label="Breadcrumb"
+          className="mx-auto flex max-w-7xl items-center gap-1.5 overflow-x-auto whitespace-nowrap no-scrollbar px-4 py-2 sm:px-6 text-xs text-[#57534E]"
+        >
+          <Link to="/" className="hover:text-[#1C1917] shrink-0">Home</Link>
+          <span className="text-[#57534E]/60 shrink-0">&gt;</span>
+          <Link to="/collections" className="hover:text-[#1C1917] shrink-0">Products</Link>
+          <span className="text-[#57534E]/60 shrink-0">&gt;</span>
+          <Link
+            to={`/collections/${product.category.toLowerCase().replace(/\s+/g, '-')}`}
+            className="hover:text-[#1C1917] shrink-0"
+          >
+            {product.category}
+          </Link>
+          <span className="text-[#57534E]/60 shrink-0">&gt;</span>
+          <span className="text-[#1C1917] font-medium truncate min-w-0">{product.name}</span>
+        </nav>
+      </div>
 
-      {/* 2. Main Product Section (Mobile: stacked vertical flow; Desktop: 2-column conversion split) */}
-      <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 sm:pt-8">
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 items-start">
-          {/* Left Column: Gallery matching Screenshot 7 */}
-          <div className="lg:col-span-6 lg:sticky lg:top-20">
+      {/* 2. Main Product Section (Mobile/Tablet: stacked vertical flow; Desktop lg+: 2-column conversion split) */}
+      <div className="mx-auto max-w-7xl px-4 pt-3 sm:px-6 sm:pt-6">
+        <div className="grid grid-cols-1 gap-5 md:gap-7 lg:grid-cols-12 lg:gap-9 xl:gap-11 items-start">
+          {/* Left Column: Gallery (clears 56px sticky header on desktop) */}
+          <div className="w-full max-w-lg mx-auto lg:max-w-none lg:col-span-6 lg:sticky lg:top-20">
             <ProductGallery
+              key={product.id}
               productName={product.name}
               images={product.images}
               hasVideoPreview={product.hasVideoPreview}
@@ -178,78 +189,93 @@ export function ProductDetailPage() {
             />
           </div>
 
-          {/* Right Column: Full Purchase Module matching Screenshot 4 & 6 */}
-          <div className="lg:col-span-6 space-y-4">
-            {/* Title with Share Button matching Screenshot 4 */}
+          {/* Right Column: 80/20 Streamlined Purchase Module */}
+          <div className="min-w-0 lg:col-span-6 space-y-3">
+            {/* 1. Title + Share */}
             <div className="flex items-start justify-between gap-3">
-              <h1 className="font-sans text-lg sm:text-xl font-bold leading-snug text-[#1C1917] flex-1">
+              <h1 className="font-display text-2xl sm:text-3xl font-semibold leading-tight text-[#1C1917] flex-1">
                 {product.name}
               </h1>
               <button
                 type="button"
                 onClick={handleShare}
-                aria-label="Share saree"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#E5E0D8] bg-white text-[#1C1917] hover:bg-[#F2EFE9] transition-colors"
+                aria-label={`Share ${product.name}`}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#E5E0D8] bg-white text-[#1C1917] hover:bg-[#F2EFE9] active:scale-95 transition-all"
               >
                 <Share2 className="h-4 w-4" />
               </button>
             </div>
 
-            {/* Urgency Pill matching Screenshot 4 */}
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-[#DC2626]">
-              <Flame className="h-4 w-4 fill-[#DC2626] text-[#DC2626]" />
-              <span>8 sold in last 25 hours</span>
-            </div>
-
-            {/* SKU line matching Screenshot 4 */}
-            <div className="text-xs text-[#57534E]">
-              SKU: <span className="font-semibold text-[#1C1917] tabular-nums">{product.sku}</span>
-            </div>
-
-            {/* Price Row with Strikethrough, Green Selling Price, and SAVE Badge matching Screenshot 4 */}
-            <div className="flex flex-wrap items-center gap-3 pt-1">
-              {product.mrp > product.price && (
-                <span className="text-sm sm:text-base font-semibold text-[#57534E] line-through tabular-nums">
-                  Rs. {formatINR(product.mrp * selectedQty)}
-                </span>
-              )}
-              <span className="text-xl sm:text-2xl font-bold text-[#059669] tabular-nums">
-                Rs. {formatINR(effectiveDisplayPrice)}
-              </span>
-              {savingsAmount > 0 && (
-                <span className="rounded-md bg-[#059669] px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-white tabular-nums shadow-xs">
-                  SAVE RS. {formatINR(savingsAmount * selectedQty)}
-                </span>
-              )}
-            </div>
-
-            {/* Snapmint No-Cost EMI Card matching Screenshot 4 */}
-            <div className="rounded-lg border border-[#E5E0D8] bg-white p-3 space-y-2">
+            {/* 2. Above-the-Fold Proof: RatingStars + SKU + One-Line Benefit */}
+            <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="rounded bg-[#059669] px-1.5 py-0.5 text-[10px] font-bold text-white uppercase">
-                    NEW
-                  </span>
-                  <span className="text-[#1C1917]">
-                    or <strong className="text-[#059669] tabular-nums">{formatINR(emiPerMonth)}/month</strong> (3 months)
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setEmiModalOpen(true)}
-                  className="rounded bg-[#5B1B29] px-3 py-1 text-[11px] font-bold text-white hover:bg-[#45121E] transition-colors cursor-pointer"
-                >
-                  View Plans
-                </button>
+                <a href="#reviews" className="inline-flex items-center hover:opacity-85 transition-opacity">
+                  <RatingStars rating={product.rating} count={product.reviewCount} />
+                </a>
+                <span className="text-xs text-[#57534E]">
+                  SKU: <span className="font-semibold text-[#1C1917] tabular-nums">{product.sku}</span>
+                </span>
               </div>
-              <p className="text-[11px] text-[#57534E]">
-                No Cost EMI on <strong className="text-[#1C1917]">UPI</strong> | <span className="text-[#B45309] font-bold">snapmint</span>
+              <p className="text-sm leading-relaxed text-[#57534E]">
+                {product.oneLineBenefit}
               </p>
             </div>
 
-            {/* Fabric Pill Selector matching Screenshot 4 */}
+            {/* 3. Price Row + Single Clean Inline EMI Strip */}
             <div className="space-y-1.5 pt-1">
-              <span className="text-xs text-[#57534E]">Fabric: <strong className="text-[#1C1917]">{product.weave}</strong></span>
+              <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+                {product.mrp > product.price && (
+                  <span className="text-sm sm:text-base font-semibold text-[#57534E] line-through tabular-nums">
+                    {formatINR(product.mrp * selectedQty)}
+                  </span>
+                )}
+                <span className="text-xl sm:text-2xl font-bold text-[#059669] tabular-nums">
+                  {formatINR(effectiveDisplayPrice)}
+                </span>
+                {savingsAmount > 0 && (
+                  <span className="rounded-md bg-[#059669] px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-white tabular-nums shadow-xs">
+                    SAVE {formatINR(savingsAmount * selectedQty)}
+                  </span>
+                )}
+              </div>
+
+              <p className="text-xs text-[#57534E]">
+                or <strong className="text-[#14532D] tabular-nums">{formatINR(emiPerMonth)}/mo</strong> No-Cost EMI (3 mos) ·{' '}
+                <button
+                  type="button"
+                  onClick={() => setEmiModalOpen(true)}
+                  className="font-semibold text-[#5B1B29] underline underline-offset-2 hover:text-[#45121E] cursor-pointer"
+                >
+                  View Plans
+                </button>
+              </p>
+            </div>
+
+            {/* 4. Fabric/Variant Selector, Size Guide & Virtual Drape Studio */}
+            <div className="space-y-2 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-[#57534E]">
+                  Fabric: <strong className="text-[#1C1917]">{product.weave}</strong>
+                </span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setTryOnProduct(product)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#5B1B29] hover:underline underline-offset-2 cursor-pointer"
+                  >
+                    <Shirt className="h-3.5 w-3.5" />
+                    <span>Try Drape</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSizeGuideOpen(true)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#14532D] hover:underline underline-offset-2 cursor-pointer"
+                  >
+                    <Ruler className="h-3.5 w-3.5" />
+                    <span>{product.hasSizeGuide ? 'Size Guide' : 'Drape & Measure Guide'}</span>
+                  </button>
+                </div>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -266,7 +292,7 @@ export function ProductDetailPage() {
                       selectedVariant === v.label
                         ? 'border-[#14532D] bg-[#14532D] text-white'
                         : 'border-[#E5E0D8] bg-white text-[#57534E] hover:border-[#1C1917]'
-                    }`}
+                    } ${!v.inStock ? 'opacity-65 line-through' : ''}`}
                   >
                     {v.label}
                   </button>
@@ -274,125 +300,100 @@ export function ProductDetailPage() {
               </div>
             </div>
 
-            {/* Quantity Stepper matching Screenshot 4 */}
-            <div className="space-y-1.5">
-              <span className="text-xs text-[#57534E]">Quantity:</span>
-              <div className="flex items-center w-28 rounded-md border border-[#E5E0D8] bg-white">
-                <button
-                  type="button"
-                  onClick={() => setSelectedQty((prev) => Math.max(1, prev - 1))}
-                  className="flex h-9 w-9 items-center justify-center text-[#57534E] hover:text-[#1C1917]"
-                >
-                  <Minus className="h-3.5 w-3.5" />
-                </button>
-                <span className="flex-1 text-center text-xs font-bold tabular-nums text-[#1C1917]">
-                  {selectedQty}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedQty((prev) => prev + 1)}
-                  className="flex h-9 w-9 items-center justify-center text-[#57534E] hover:text-[#1C1917]"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Scarcity Bar matching Screenshot 4 */}
-            <div className="space-y-1 pt-1">
-              <p className="text-xs font-semibold text-[#DC2626]">
-                Please hurry! Only 20 left in stock
-              </p>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#E5E0D8]">
-                <div className="h-full w-1/4 rounded-full bg-[#DC2626]" />
-              </div>
-            </div>
-
-            {/* Special Offers (Gokwik-style) matching Screenshot 4 */}
-            <div className="rounded-xl border border-[#E5E0D8] bg-[#FDFBF7] p-4 space-y-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-[#B45309]">Special Offers</span>
-                <span className="text-[11px] text-[#57534E]">Powered by <strong>GoKwik</strong></span>
-              </div>
-              <div className="rounded-lg border border-[#F2EFE9] bg-white p-3 flex items-center justify-between gap-3 shadow-2xs">
-                <div className="flex items-center gap-2.5">
-                  <span className="rounded bg-[#B45309]/10 px-2 py-0.5 text-[10px] font-bold text-[#B45309]">
-                    EMI on Cards
+            {/* 5. Quantity Stepper + Calm Stock/Craft Status */}
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div className="space-y-1.5">
+                <span className="text-xs text-[#57534E]">Quantity:</span>
+                <div className="flex items-center w-28 rounded-md border border-[#E5E0D8] bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedQty((prev) => Math.max(1, prev - 1))}
+                    aria-label="Decrease quantity"
+                    className="flex h-9 w-9 items-center justify-center text-[#57534E] hover:text-[#1C1917] active:scale-95 transition-transform"
+                  >
+                    <Minus className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="flex-1 text-center text-xs font-bold tabular-nums text-[#1C1917]">
+                    {selectedQty}
                   </span>
-                  <div className="text-xs text-[#1C1917]">
-                    <p className="font-semibold">EMI starts from ₹88/M</p>
-                    <p className="text-[11px] text-[#57534E]">Plans Available From 10+ Banks</p>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedQty((prev) => prev + 1)}
+                    aria-label="Increase quantity"
+                    className="flex h-9 w-9 items-center justify-center text-[#57534E] hover:text-[#1C1917] active:scale-95 transition-transform"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setEmiModalOpen(true)}
-                  className="p-1 text-[#57534E] hover:text-[#1C1917]"
-                >
-                  &gt;
-                </button>
               </div>
-              <div className="flex justify-center gap-1 pt-0.5">
-                <div className="h-1.5 w-6 rounded-full bg-[#B45309]" />
-                <div className="h-1.5 w-1.5 rounded-full bg-[#E5E0D8]" />
-                <div className="h-1.5 w-1.5 rounded-full bg-[#E5E0D8]" />
-              </div>
+
+              <span
+                className={`text-xs font-semibold ${
+                  isOutOfStock ? 'text-[#991B1B]' : 'text-[#14532D]'
+                }`}
+              >
+                {isOutOfStock
+                  ? 'Currently out of stock · Notify me'
+                  : 'Handwoven in small batches · Dispatches in 24h'}
+              </span>
             </div>
 
-            {/* Action Buttons: Add to Cart (Sand) + Wishlist + BUY IT NOW (Wine) matching Screenshot 4 */}
+            {/* 6. Action Buttons: Add to Cart (Sand) + Wishlist + BUY IT NOW (Wine) */}
             <div ref={buyBoxRef} className="space-y-2.5 pt-2">
               <div className="flex items-center gap-2.5">
                 <button
                   type="button"
                   onClick={() => handlePrimaryBuy(false)}
-                  className="flex-1 rounded-md bg-[#C4A482] py-3.5 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-sm hover:bg-[#B28F6B] transition-colors cursor-pointer"
+                  className="flex-1 rounded-md bg-[#C4A482] py-3.5 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-sm hover:bg-[#B28F6B] active:scale-[0.98] transition-all cursor-pointer"
                 >
-                  Add to Cart
+                  {isOutOfStock ? 'Notify When Back' : 'Add to Cart'}
                 </button>
                 <button
                   type="button"
                   onClick={() => toggleWishlist(product.id, product.name)}
                   aria-label={isWishlisted ? 'Remove from wishlist' : 'Save to wishlist'}
-                  className="flex h-12 w-12 items-center justify-center rounded-md border border-[#E5E0D8] bg-white text-[#1C1917] hover:bg-[#F2EFE9] transition-colors shrink-0 cursor-pointer"
+                  className="flex h-12 w-12 items-center justify-center rounded-md border border-[#E5E0D8] bg-white text-[#1C1917] hover:bg-[#F2EFE9] active:scale-95 transition-all shrink-0 cursor-pointer"
                 >
-                  <Heart className={`h-5 w-5 ${isWishlisted ? 'fill-[#991B1B] text-[#991B1B]' : ''}`} />
+                  <Heart className={`h-5 w-5 transition-colors duration-150 ${isWishlisted ? 'fill-[#991B1B] text-[#991B1B] kl-heart-active' : ''}`} />
                 </button>
               </div>
 
               <button
                 type="button"
                 onClick={() => handlePrimaryBuy(true)}
-                className="w-full rounded-md bg-[#5B1B29] py-3.5 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-md hover:bg-[#45121E] transition-colors cursor-pointer"
+                className="w-full rounded-md bg-[#5B1B29] py-3.5 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-md hover:bg-[#45121E] active:scale-[0.98] transition-all cursor-pointer"
               >
                 Buy It Now
               </button>
             </div>
 
-            {/* "Goes well with" Carousel Cards matching Screenshot 4 & 6 */}
-            <div className="rounded-xl border border-[#E5E0D8] bg-[#FAF9F6] p-4 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-[#1C1917]">Goes well with</span>
-                <span className="text-[11px] text-[#57534E]">Powered by <strong>GoKwik</strong></span>
+            {/* "Complete the Look" Pairing Cards (without GoKwik branding) */}
+            <div className="rounded-xl border border-[#E5E0D8] bg-[#FAF9F6] p-3.5 sm:p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-1 text-xs">
+                <span className="font-bold text-[#1C1917]">Complete the Look</span>
+                <span className="text-[11px] text-[#57534E]">Curated Boutique Pairings</span>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
                 {complementaryProducts.slice(0, 2).map((cp) => (
-                  <div key={cp.id} className="rounded-lg border border-[#E5E0D8] bg-white p-2.5 flex flex-col justify-between space-y-2 shadow-2xs">
-                    <div className="aspect-[4/3] w-full overflow-hidden rounded bg-[#F2EFE9]">
+                  <div key={cp.id} className="min-w-0 rounded-lg border border-[#E5E0D8] bg-white p-2 sm:p-2.5 flex flex-col justify-between space-y-2 shadow-2xs">
+                    <Link to={`/product/${cp.id}`} className="block aspect-[4/3] w-full overflow-hidden rounded bg-[#F2EFE9]">
                       <SafeImage src={cp.images[0].url} alt={cp.name} className="h-full w-full object-cover" />
-                    </div>
-                    <div className="space-y-0.5">
-                      <p className="truncate text-xs font-semibold text-[#1C1917]">{cp.name}</p>
-                      <div className="flex items-baseline gap-1.5 text-xs tabular-nums">
+                    </Link>
+                    <div className="space-y-0.5 min-w-0">
+                      <Link to={`/product/${cp.id}`} className="block truncate text-xs font-semibold text-[#1C1917] hover:text-[#14532D]">
+                        {cp.name}
+                      </Link>
+                      <div className="flex flex-wrap items-baseline gap-1.5 text-xs tabular-nums">
                         <span className="font-bold text-[#1C1917]">{formatINR(cp.price)}</span>
                         {cp.mrp > cp.price && <span className="text-[10px] text-[#57534E] line-through">{formatINR(cp.mrp)}</span>}
                       </div>
                     </div>
-                    <div className="flex gap-1.5 pt-1">
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
                       <button
                         type="button"
                         onClick={() => addToCart(cp, { quantity: 1, openDrawer: true })}
-                        className="flex-1 rounded bg-[#1C1917] py-1.5 text-[11px] font-semibold text-white hover:bg-black"
+                        className="rounded bg-[#1C1917] py-1.5 px-1 text-[11px] font-semibold text-white hover:bg-black cursor-pointer touch-manipulation"
                       >
                         Add
                       </button>
@@ -403,7 +404,7 @@ export function ProductDetailPage() {
                           addToCart(product, { quantity: 1, openDrawer: true });
                           showToast('Bundle added to bag with special savings!');
                         }}
-                        className="flex-1 rounded border border-[#E5E0D8] bg-white py-1.5 text-[10px] font-semibold text-[#1C1917] hover:bg-[#F2EFE9]"
+                        className="rounded border border-[#E5E0D8] bg-white py-1.5 px-1 text-[10px] font-semibold text-[#1C1917] hover:bg-[#F2EFE9] cursor-pointer touch-manipulation"
                       >
                         Bundle
                       </button>
@@ -443,132 +444,116 @@ export function ProductDetailPage() {
               />
             )}
 
-            {/* 5 Collapsible Accordions matching Screenshot 6 */}
+            {/* 5 Smooth Collapsible Accordions */}
             <div className="divide-y divide-[#E5E0D8] border-y border-[#E5E0D8] bg-white">
-              {/* 1. Product Details */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => toggleAccordionItem('details')}
-                  className="flex w-full items-center justify-between py-3.5 text-left text-xs font-bold uppercase tracking-wider text-[#1C1917]"
-                >
-                  <span>Product Details</span>
-                  <ChevronDown className={`h-4 w-4 transition-transform ${openAccordion === 'details' ? 'rotate-180' : ''}`} />
-                </button>
-                {openAccordion === 'details' && (
-                  <div className="space-y-2 pb-4 text-xs text-[#57534E] leading-relaxed">
-                    <p>• <strong>Weave:</strong> {product.weave} Handloom cluster</p>
-                    <p>• <strong>Length:</strong> {product.lengthSpec}</p>
-                    <p>• <strong>Blouse:</strong> {product.blouseIncluded}</p>
-                    <p>• <strong>Zari / Border:</strong> Traditional Korvai temple zari tested for skin comfort</p>
-                    <p>• <strong>Weight:</strong> Approximately 480–540g for comfortable 8+ hour celebrations</p>
+              {[
+                {
+                  key: 'details',
+                  title: 'Product Details',
+                  content: (
+                    <div className="space-y-2 pb-4 text-xs text-[#57534E] leading-relaxed">
+                      <p>• <strong>Weave:</strong> {product.weave} Handloom cluster</p>
+                      <p>• <strong>Length / Spec:</strong> {product.lengthSpec}</p>
+                      <p>• <strong>Includes:</strong> {product.blouseIncluded}</p>
+                      <p>• <strong>Care:</strong> {product.fabricCare}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'note',
+                  title: 'Note',
+                  content: (
+                    <div className="pb-4 text-xs text-[#57534E] leading-relaxed">
+                      <p>
+                        Each handloom piece is individually crafted by master artisans. Minor slub yarn variations, weave texture, and dye shades are natural signatures of human craft rather than flaws.
+                      </p>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'wash',
+                  title: 'Wash Instructions',
+                  content: (
+                    <div className="space-y-1.5 pb-4 text-xs text-[#57534E] leading-relaxed">
+                      <p>• Dry clean strictly for the first two washes to preserve authentic zari sheen.</p>
+                      <p>• Store in breathable unbleached cotton/muslin bags. Avoid hanging on metal hangers.</p>
+                      <p>• Change fold lines every 3 months for lifelong heirloom durability.</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'shipping',
+                  title: 'Shipping & Delivery Policy',
+                  content: (
+                    <div className="space-y-1.5 pb-4 text-xs text-[#57534E] leading-relaxed">
+                      <p>• Free Express Insured Shipping on all orders over ₹2,500.</p>
+                      <p>• Orders under ₹2,500 carry a standard ₹120 insured door delivery fee.</p>
+                      <p>• Metro cities: 2–3 business days. Rest of India: 3–5 business days.</p>
+                      <p>• Cash on Delivery (COD) supported across 19,000+ Indian pincodes.</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'refund',
+                  title: 'Refund & Exchange Policy',
+                  content: (
+                    <div className="space-y-1.5 pb-4 text-xs text-[#57534E] leading-relaxed">
+                      <p>• 7-Day Easy Doorstep Exchange &amp; Return with free courier pickup.</p>
+                      <p>• Exchange for another shade/blouse size or opt for <strong>110% Instant Store Credit</strong> bonus.</p>
+                      <p>• Original fold, tag, and unstitched blouse intact required for exchange pickup.</p>
+                    </div>
+                  ),
+                },
+              ].map((item) => {
+                const isOpen = openAccordion === item.key;
+                return (
+                  <div key={item.key}>
+                    <button
+                      type="button"
+                      onClick={() => toggleAccordionItem(item.key)}
+                      aria-expanded={isOpen}
+                      className="flex w-full items-center justify-between py-3.5 text-left text-xs font-bold uppercase tracking-wider text-[#1C1917] cursor-pointer"
+                    >
+                      <span>{item.title}</span>
+                      <ChevronDown
+                        className={`h-4 w-4 transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] ${
+                          isOpen ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </button>
+                    <div className="kl-accordion-content" data-open={isOpen ? 'true' : 'false'}>
+                      <div className="kl-accordion-inner">{item.content}</div>
+                    </div>
                   </div>
-                )}
-              </div>
-
-              {/* 2. Note */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => toggleAccordionItem('note')}
-                  className="flex w-full items-center justify-between py-3.5 text-left text-xs font-bold uppercase tracking-wider text-[#1C1917]"
-                >
-                  <span>Note</span>
-                  <ChevronDown className={`h-4 w-4 transition-transform ${openAccordion === 'note' ? 'rotate-180' : ''}`} />
-                </button>
-                {openAccordion === 'note' && (
-                  <div className="pb-4 text-xs text-[#57534E] leading-relaxed">
-                    <p>
-                      Each handloom saree is individually handwoven on shuttle pit-looms. Minor slub yarn variations, weave texture, and dye shades are natural signatures of human artisanal craft rather than flaws.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* 3. Wash Instructions */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => toggleAccordionItem('wash')}
-                  className="flex w-full items-center justify-between py-3.5 text-left text-xs font-bold uppercase tracking-wider text-[#1C1917]"
-                >
-                  <span>Wash Instructions</span>
-                  <ChevronDown className={`h-4 w-4 transition-transform ${openAccordion === 'wash' ? 'rotate-180' : ''}`} />
-                </button>
-                {openAccordion === 'wash' && (
-                  <div className="space-y-1.5 pb-4 text-xs text-[#57534E] leading-relaxed">
-                    <p>• Dry clean strictly for the first two washes to preserve authentic zari sheen.</p>
-                    <p>• Store in breathable unbleached cotton/muslin bags. Avoid hanging on metal hangers.</p>
-                    <p>• Change fold lines every 3 months for lifelong heirloom durability.</p>
-                  </div>
-                )}
-              </div>
-
-              {/* 4. Shipping & Delivery Policy */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => toggleAccordionItem('shipping')}
-                  className="flex w-full items-center justify-between py-3.5 text-left text-xs font-bold uppercase tracking-wider text-[#1C1917]"
-                >
-                  <span>Shipping &amp; Delivery Policy</span>
-                  <ChevronDown className={`h-4 w-4 transition-transform ${openAccordion === 'shipping' ? 'rotate-180' : ''}`} />
-                </button>
-                {openAccordion === 'shipping' && (
-                  <div className="space-y-1.5 pb-4 text-xs text-[#57534E] leading-relaxed">
-                    <p>• Free Express Insured Shipping on all orders over ₹2,500.</p>
-                    <p>• Orders under ₹2,500 carry a standard ₹120 insured door delivery fee.</p>
-                    <p>• Metro cities: 2–3 business days. Rest of India: 3–5 business days.</p>
-                    <p>• Cash on Delivery (COD) supported across 19,000+ Indian pincodes.</p>
-                  </div>
-                )}
-              </div>
-
-              {/* 5. Refund & Exchange Policy */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => toggleAccordionItem('refund')}
-                  className="flex w-full items-center justify-between py-3.5 text-left text-xs font-bold uppercase tracking-wider text-[#1C1917]"
-                >
-                  <span>Refund &amp; Exchange Policy</span>
-                  <ChevronDown className={`h-4 w-4 transition-transform ${openAccordion === 'refund' ? 'rotate-180' : ''}`} />
-                </button>
-                {openAccordion === 'refund' && (
-                  <div className="space-y-1.5 pb-4 text-xs text-[#57534E] leading-relaxed">
-                    <p>• 7-Day Easy Doorstep Exchange &amp; Return with free courier pickup.</p>
-                    <p>• Exchange for another shade/blouse size or opt for <strong>110% Instant Store Credit</strong> bonus.</p>
-                    <p>• Original fold, tag, and unstitched blouse intact required for exchange pickup.</p>
-                  </div>
-                )}
-              </div>
+                );
+              })}
             </div>
           </div>
         </div>
       </div>
 
-      {/* 3. Highlight Marquee Strip matching Screenshot 5 & 6 */}
-      <div className="mt-12 overflow-hidden border-y border-[#E5E0D8] bg-[#F2EFE9] py-3 text-xs font-bold uppercase tracking-widest text-[#1C1917]">
-        <div className="flex items-center justify-around gap-6 whitespace-nowrap px-4 text-center">
+      {/* 3. Highlight Trust Strip */}
+      <div className="mt-8 sm:mt-10 border-y border-[#E5E0D8] bg-[#F2EFE9] py-2.5 text-[11px] sm:text-xs font-bold uppercase tracking-wider sm:tracking-widest text-[#1C1917]">
+        <div className="mx-auto max-w-7xl grid grid-cols-2 gap-x-3 gap-y-1.5 px-4 text-center sm:flex sm:flex-wrap sm:items-center sm:justify-around sm:gap-6">
           <span>SAFE &amp; SECURED</span>
-          <span className="text-[#57534E]">·</span>
+          <span className="hidden sm:inline text-[#57534E]">·</span>
           <span>FREE SHIPPING OVER ₹2,500</span>
-          <span className="text-[#57534E]">·</span>
+          <span className="hidden sm:inline text-[#57534E]">·</span>
           <span>1,50,000+ HAPPY CUSTOMERS</span>
-          <span className="text-[#57534E]">·</span>
+          <span className="hidden sm:inline text-[#57534E]">·</span>
           <span>PAN INDIA DELIVERY &amp; COD</span>
         </div>
       </div>
 
-      {/* 4. "Frequently Bought Together" Carousel matching Screenshot 5 */}
-      <section className="mx-auto max-w-7xl px-4 pt-10 sm:px-6 space-y-6">
+      {/* 4. "Frequently Bought Together" Carousel */}
+      <section className="mx-auto max-w-7xl px-4 pt-8 sm:px-6 sm:pt-9 space-y-4 sm:space-y-5">
         <div className="text-center">
           <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#1C1917]">
             Frequently Bought Together
           </h2>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-4">
           {PRODUCTS.slice(1, 5).map((fProduct) => {
             const fSavingsPct = discountPercent(fProduct.price, fProduct.mrp);
             const isFwishlisted = wishlistIds.includes(fProduct.id);
@@ -577,23 +562,27 @@ export function ProductDetailPage() {
             return (
               <div
                 key={fProduct.id}
-                className="flex flex-col justify-between rounded-lg border border-[#E5E0D8] bg-white overflow-hidden shadow-2xs hover:shadow-md transition-shadow"
+                className="min-w-0 flex flex-col justify-between rounded-lg border border-[#E5E0D8] bg-white overflow-hidden shadow-2xs hover:shadow-md transition-shadow"
               >
                 <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#F2EFE9] group">
-                  <SafeImage src={fProduct.images[0].url} alt={fProduct.name} className="h-full w-full object-cover" />
-                  
-                  {/* Sale Tag */}
-                  <span className="absolute top-2 left-2 rounded-xs bg-[#E11D48] px-2 py-0.5 text-[10px] font-bold text-white">
-                    Sale {fSavingsPct}%
-                  </span>
+                  <Link to={`/product/${fProduct.id}`} className="block h-full w-full">
+                    <SafeImage src={fProduct.images[0].url} alt={fProduct.name} className="h-full w-full object-cover" />
+                  </Link>
 
-                  {/* Try it on Pill Button matching Screenshot 5 */}
+                  {/* Sale Tag */}
+                  {fSavingsPct > 0 && (
+                    <span className="absolute top-2 left-2 rounded-xs bg-[#E11D48] px-2 py-0.5 text-[10px] font-bold text-white">
+                      Sale {fSavingsPct}%
+                    </span>
+                  )}
+
+                  {/* Try it on Pill Button */}
                   <button
                     type="button"
-                    onClick={() => setTryOnModalOpen(true)}
-                    className="absolute bottom-2 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 rounded-full bg-[#5B1B29] px-3 py-1 text-[11px] font-semibold text-white shadow-md hover:bg-[#45121E] transition-colors"
+                    onClick={() => setTryOnProduct(fProduct)}
+                    className="absolute bottom-2 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-[#5B1B29] px-2.5 sm:px-3 py-1 text-[10px] sm:text-[11px] font-semibold text-white shadow-md hover:bg-[#45121E] transition-colors cursor-pointer touch-manipulation"
                   >
-                    <Shirt className="h-3 w-3" />
+                    <Shirt className="h-3 w-3 shrink-0" />
                     <span>Try it on</span>
                   </button>
 
@@ -601,17 +590,18 @@ export function ProductDetailPage() {
                   <button
                     type="button"
                     onClick={() => toggleWishlist(fProduct.id, fProduct.name)}
-                    className="absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-[#1C1917] shadow-sm hover:bg-white"
+                    aria-label={isFwishlisted ? `Remove ${fProduct.name} from wishlist` : `Save ${fProduct.name} to wishlist`}
+                    className="absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-[#1C1917] shadow-sm hover:bg-white active:scale-95 transition-all cursor-pointer touch-manipulation"
                   >
-                    <Heart className={`h-3.5 w-3.5 ${isFwishlisted ? 'fill-[#991B1B] text-[#991B1B]' : ''}`} />
+                    <Heart className={`h-3.5 w-3.5 transition-colors duration-150 ${isFwishlisted ? 'fill-[#991B1B] text-[#991B1B] kl-heart-active' : ''}`} />
                   </button>
                 </div>
 
-                <div className="p-3 space-y-2 flex-1 flex flex-col justify-between">
+                <div className="p-2.5 sm:p-3 space-y-2 flex-1 flex flex-col justify-between">
                   <button
                     type="button"
                     onClick={() => addToCart(fProduct, { quantity: 1, openDrawer: true })}
-                    className="w-full rounded-md border border-[#1C1917] bg-white py-2 text-xs font-bold uppercase tracking-wider text-[#1C1917] hover:bg-[#FAF9F6] transition-colors cursor-pointer"
+                    className="w-full rounded-md border border-[#1C1917] bg-white py-2 text-[11px] sm:text-xs font-bold uppercase tracking-wider text-[#1C1917] hover:bg-[#FAF9F6] transition-colors cursor-pointer touch-manipulation"
                   >
                     Add to Cart
                   </button>
@@ -620,16 +610,16 @@ export function ProductDetailPage() {
                     <Link to={`/product/${fProduct.id}`} className="block text-xs font-semibold text-[#1C1917] hover:text-[#14532D] line-clamp-2">
                       {fProduct.name}
                     </Link>
-                    <div className="flex items-baseline gap-1.5 text-xs tabular-nums">
+                    <div className="flex flex-wrap items-baseline gap-1.5 text-xs tabular-nums">
                       <span className="font-semibold text-[#57534E] line-through">{formatINR(fProduct.mrp)}</span>
                       <span className="font-bold text-[#059669]">{formatINR(fProduct.price)}</span>
                     </div>
-                    <div className="flex items-center gap-1 text-[10px] text-[#57534E]">
-                      <span>or <strong className="text-[#059669]">{formatINR(fEmi)}/Month</strong></span>
+                    <div className="flex flex-wrap items-center gap-1 text-[10px] text-[#57534E]">
+                      <span>or <strong className="text-[#059669] tabular-nums">{formatINR(fEmi)}/Month</strong></span>
                       <button
                         type="button"
                         onClick={() => setEmiModalOpen(true)}
-                        className="rounded bg-[#5B1B29] px-1.5 py-0.2 text-[9px] font-semibold text-white"
+                        className="rounded bg-[#5B1B29] px-1.5 py-0.5 text-[9px] font-semibold text-white cursor-pointer touch-manipulation"
                       >
                         Buy on EMI
                       </button>
@@ -642,171 +632,213 @@ export function ProductDetailPage() {
         </div>
       </section>
 
-      {/* 5. Embedded Video Showcase Card matching Screenshot 3 & 5 */}
-      <section className="mx-auto max-w-4xl px-4 pt-12 sm:px-6">
-        <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-[#E5E0D8] bg-[#1C1917] shadow-xl group">
+      {/* 5. Editorial Drape & Craft Showcase Card (aligned to max-w-7xl with compact editorial height) */}
+      <section className="mx-auto max-w-7xl px-4 pt-8 sm:px-6 sm:pt-10">
+        <div className="relative aspect-[4/3] sm:aspect-[21/9] lg:max-h-[400px] w-full overflow-hidden rounded-2xl border border-[#E5E0D8] bg-[#1C1917] shadow-lg group">
           <SafeImage
             src={product.images[1]?.url || product.images[0].url}
-            alt="Diwali festive saree loom walkthrough"
-            className="h-full w-full object-cover opacity-85 group-hover:scale-102 transition-transform duration-700"
+            alt={`${product.name} handloom drape showcase`}
+            className="h-full w-full object-cover opacity-85 kl-gallery-zoom"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-black/30 flex flex-col items-center justify-center p-6 text-center text-white space-y-3">
-            <p className="font-display text-xl sm:text-2xl font-bold">
-              🌸 Your Festive Saree Is Waiting! 🤩
+          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/25 flex flex-col items-center justify-center p-4 sm:p-6 text-center text-white space-y-2 sm:space-y-2.5">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-white/80">
+              Kora &amp; Loom Handloom Collective
+            </span>
+            <p className="font-display text-xl sm:text-3xl font-semibold max-w-lg leading-snug">
+              Handloom Craft in Natural Daylight
             </p>
-            <p className="text-xs text-white/80">Kora &amp; Loom Handloom Boutique</p>
+            <p className="text-xs text-white/85 max-w-md">{product.videoCaption}</p>
 
             <button
               type="button"
-              onClick={() => {
-                showToast('Playing full 4K daylight drape inspection video...');
-              }}
-              aria-label="Play saree video"
-              className="flex h-14 w-14 items-center justify-center rounded-full bg-[#E11D48] text-white shadow-2xl hover:scale-110 active:scale-95 transition-all cursor-pointer"
+              onClick={() => setTryOnProduct(product)}
+              aria-label="Open Virtual Drape Studio"
+              className="inline-flex items-center gap-2 rounded-full bg-[#5B1B29] px-5 py-2.5 text-xs font-semibold text-white shadow-xl hover:bg-[#45121E] active:scale-95 transition-all cursor-pointer"
             >
-              <Play className="h-7 w-7 fill-white ml-1" />
+              {product.hasVideoPreview ? <Play className="h-3.5 w-3.5 fill-white" /> : <Shirt className="h-3.5 w-3.5" />}
+              <span>Preview Drape &amp; Blouse Pairing</span>
             </button>
+          </div>
+        </div>
+      </section>
 
-            <div className="pt-2">
-              <span className="rounded-full bg-black/60 px-4 py-1.5 text-xs font-semibold backdrop-blur-xs">
-                Watch on YouTube
-              </span>
+      {/* 6. Customer Reviews Section (balanced 2-col layout on desktop, compact stack on mobile) */}
+      <section id="reviews" className="mx-auto max-w-7xl px-4 pt-8 sm:px-6 sm:pt-10">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-8 items-start border-t border-[#E5E0D8] pt-7 sm:pt-8">
+          <div className="lg:col-span-4 space-y-3 text-center lg:text-left">
+            <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#1C1917]">
+              Customer Reviews
+            </h2>
+            <div className="flex justify-center lg:justify-start">
+              <RatingStars rating={product.rating} count={product.reviewCount} />
             </div>
+            <p className="text-xs text-[#57534E]">
+              {productReviews.length > 0
+                ? `Showing ${productReviews.length} verified buyer ${productReviews.length === 1 ? 'review' : 'reviews'} for this piece.`
+                : 'Be the first to share how this weave drapes and feels.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => setWriteReviewOpen(true)}
+              className="w-full sm:w-auto lg:w-full rounded-md bg-[#5B1B29] px-6 py-3 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-sm hover:bg-[#45121E] active:scale-[0.98] transition-all cursor-pointer"
+            >
+              Write a review
+            </button>
           </div>
-        </div>
-      </section>
 
-      {/* 6. Customer Reviews Section matching Screenshot 3 */}
-      <section id="reviews" className="mx-auto max-w-4xl px-4 pt-12 sm:px-6 space-y-6">
-        <div className="text-center space-y-2">
-          <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#1C1917]">
-            Customer Reviews
-          </h2>
-          <div className="flex items-center justify-center gap-1 text-[#B45309]">
-            {[1, 2, 3, 4, 5].map((s) => (
-              <Star key={s} className="h-5 w-5 fill-[#B45309] text-[#B45309]" />
-            ))}
-          </div>
-          <p className="text-xs text-[#57534E]">
-            {productReviews.length > 0 ? `${productReviews.length} Verified Buyer Reviews` : 'Be the first to write a review'}
-          </p>
-        </div>
-
-        {/* Full-width Write a Review Button matching Screenshot 3 */}
-        <button
-          type="button"
-          onClick={() => setWriteReviewOpen(true)}
-          className="w-full rounded-md bg-[#5B1B29] py-3.5 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-sm hover:bg-[#45121E] transition-colors cursor-pointer"
-        >
-          Write a review
-        </button>
-
-        {/* Reviews List */}
-        {productReviews.length > 0 && (
-          <div className="divide-y divide-[#E5E0D8] rounded-xl border border-[#E5E0D8] bg-white p-5 space-y-4">
-            {productReviews.map((rev) => (
-              <div key={rev.id} className="pt-4 first:pt-0 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <RatingStars rating={rev.rating} count={0} />
-                    <span className="font-bold text-[#1C1917]">{rev.author}</span>
-                    <span className="rounded bg-[#14532D]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#14532D]">Verified</span>
+          <div className="lg:col-span-8">
+            {productReviews.length > 0 ? (
+              <div className="divide-y divide-[#E5E0D8] rounded-xl border border-[#E5E0D8] bg-white p-4 sm:p-5 space-y-4">
+                {productReviews.map((rev) => (
+                  <div key={rev.id} className="pt-4 first:pt-0 space-y-1.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <RatingStars rating={rev.rating} count={0} />
+                        <span className="font-bold text-[#1C1917]">{rev.author}</span>
+                        <span className="rounded bg-[#14532D]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#14532D]">
+                          Verified
+                        </span>
+                      </div>
+                      <span className="text-[#57534E]">{rev.date}</span>
+                    </div>
+                    <p className="font-semibold text-sm text-[#1C1917]">{rev.title}</p>
+                    <p className="text-[#57534E] leading-relaxed">{rev.comment}</p>
+                    <p className="text-[11px] text-[#57534E]/80">
+                      Purchased for: {rev.occasionPurchased} · {rev.city}
+                    </p>
                   </div>
-                  <span className="text-[#57534E]">{rev.date}</span>
-                </div>
-                <p className="font-semibold text-sm text-[#1C1917]">{rev.title}</p>
-                <p className="text-[#57534E] leading-relaxed">{rev.comment}</p>
-                <p className="text-[11px] text-[#57534E]/80">Purchased for: {rev.occasionPurchased} · {rev.city}</p>
+                ))}
               </div>
-            ))}
+            ) : (
+              <div className="rounded-xl border border-dashed border-[#E5E0D8] bg-white p-6 text-center text-xs text-[#57534E]">
+                No reviews on this weave yet. Share your drape notes or occasion photos to help fellow shoppers.
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </section>
 
-      {/* 7. Recently Viewed Products matching Screenshot 2 & 3 */}
+      {/* 7. Recently Viewed Products (aligned to max-w-7xl grid) */}
       {recentlyViewedProducts.length > 0 && (
-        <section className="mx-auto max-w-7xl px-4 pt-12 sm:px-6 space-y-6">
+        <section className="mx-auto max-w-7xl px-4 pt-8 sm:px-6 sm:pt-10 space-y-4 sm:space-y-5">
           <div className="text-center">
             <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#1C1917]">
               Recently Viewed Products
             </h2>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 max-w-2xl mx-auto">
-            {recentlyViewedProducts.map((rvProduct) => (
-              <div
-                key={rvProduct.id}
-                className="flex flex-col justify-between rounded-lg border border-[#E5E0D8] bg-white overflow-hidden shadow-2xs"
-              >
-                <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#F2EFE9]">
-                  <SafeImage src={rvProduct.images[0].url} alt={rvProduct.name} className="h-full w-full object-cover" />
-                  <span className="absolute top-2 left-2 rounded-xs bg-[#E11D48] px-2 py-0.5 text-[10px] font-bold text-white">
-                    Sale 12%
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => toggleWishlist(rvProduct.id, rvProduct.name)}
-                    className="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-[#1C1917]"
-                  >
-                    <Heart className="h-3 w-3" />
-                  </button>
-                </div>
-                <div className="p-3 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => addToCart(rvProduct, { quantity: 1, openDrawer: true })}
-                    className="w-full rounded-md border border-[#1C1917] bg-white py-1.5 text-xs font-bold uppercase tracking-wider text-[#1C1917] hover:bg-[#FAF9F6]"
-                  >
-                    Add to Cart
-                  </button>
-                  <p className="truncate text-xs font-semibold text-[#1C1917]">{rvProduct.name}</p>
-                  <div className="flex items-baseline gap-1.5 text-xs tabular-nums">
-                    <span className="text-[#57534E] line-through">{formatINR(rvProduct.mrp)}</span>
-                    <span className="font-bold text-[#059669]">{formatINR(rvProduct.price)}</span>
+          <div className="grid grid-cols-2 gap-2.5 sm:gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {recentlyViewedProducts.map((rvProduct) => {
+              const rvSavingsPct = discountPercent(rvProduct.price, rvProduct.mrp);
+              const isRvWishlisted = wishlistIds.includes(rvProduct.id);
+
+              return (
+                <div
+                  key={rvProduct.id}
+                  className="min-w-0 flex flex-col justify-between rounded-lg border border-[#E5E0D8] bg-white overflow-hidden shadow-2xs"
+                >
+                  <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#F2EFE9]">
+                    <Link to={`/product/${rvProduct.id}`} className="block h-full w-full">
+                      <SafeImage src={rvProduct.images[0].url} alt={rvProduct.name} className="h-full w-full object-cover" />
+                    </Link>
+                    {rvSavingsPct > 0 && (
+                      <span className="absolute top-2 left-2 rounded-xs bg-[#E11D48] px-2 py-0.5 text-[10px] font-bold text-white">
+                        Sale {rvSavingsPct}%
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => toggleWishlist(rvProduct.id, rvProduct.name)}
+                      aria-label={isRvWishlisted ? `Remove ${rvProduct.name} from wishlist` : `Save ${rvProduct.name} to wishlist`}
+                      className="absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-[#1C1917] shadow-xs active:scale-95 transition-all touch-manipulation"
+                    >
+                      <Heart className={`h-3.5 w-3.5 transition-colors duration-150 ${isRvWishlisted ? 'fill-[#991B1B] text-[#991B1B] kl-heart-active' : ''}`} />
+                    </button>
+                  </div>
+                  <div className="p-2.5 sm:p-3 space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => addToCart(rvProduct, { quantity: 1, openDrawer: true })}
+                      className="w-full rounded-md border border-[#1C1917] bg-white py-1.5 text-[11px] sm:text-xs font-bold uppercase tracking-wider text-[#1C1917] hover:bg-[#FAF9F6] cursor-pointer touch-manipulation"
+                    >
+                      Add to Cart
+                    </button>
+                    <Link
+                      to={`/product/${rvProduct.id}`}
+                      className="block truncate text-xs font-semibold text-[#1C1917] hover:text-[#14532D]"
+                    >
+                      {rvProduct.name}
+                    </Link>
+                    <div className="flex flex-wrap items-baseline gap-1.5 text-xs tabular-nums">
+                      <span className="text-[#57534E] line-through">{formatINR(rvProduct.mrp)}</span>
+                      <span className="font-bold text-[#059669]">{formatINR(rvProduct.price)}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
 
-      {/* 8. Sticky Bottom Add to Cart Bar for Mobile matching Screenshots 1-7 */}
-      {showStickyBar && (
-        <div className="fixed bottom-14 left-0 right-0 z-30 border-t border-[#E5E0D8] bg-white/95 backdrop-blur-md px-4 py-2.5 shadow-xl md:hidden">
-          <div className="flex items-center gap-2.5 max-w-md mx-auto">
-            <button
-              type="button"
-              onClick={() => toggleWishlist(product.id, product.name)}
-              aria-label={isWishlisted ? 'Remove from wishlist' : 'Save to wishlist'}
-              className="flex h-11 w-11 items-center justify-center rounded-md border border-[#E5E0D8] bg-white text-[#1C1917] shrink-0"
-            >
-              <Heart className={`h-5 w-5 ${isWishlisted ? 'fill-[#991B1B] text-[#991B1B]' : ''}`} />
-            </button>
-            <button
-              type="button"
-              onClick={() => handlePrimaryBuy(false)}
-              className="flex-1 rounded-md bg-[#C4A482] py-3 text-xs font-bold uppercase tracking-wider text-white shadow-sm hover:bg-[#B28F6B] transition-colors"
-            >
-              Add to Cart · {formatINR(effectiveDisplayPrice)}
-            </button>
-          </div>
+      {/* 8. Sticky Bottom Add to Cart Bar for Mobile (slides smoothly above MobileBottomNav) */}
+      <div
+        data-visible={showStickyBar ? 'true' : 'false'}
+        aria-hidden={!showStickyBar}
+        className="kl-sticky-bar fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] left-0 right-0 z-30 border-t border-[#E5E0D8] bg-white/95 backdrop-blur-md px-3 sm:px-4 py-2.5 shadow-xl md:hidden"
+      >
+        <div className="flex items-center gap-2.5 max-w-lg mx-auto">
+          <button
+            type="button"
+            onClick={() => toggleWishlist(product.id, product.name)}
+            aria-label={isWishlisted ? 'Remove from wishlist' : 'Save to wishlist'}
+            tabIndex={showStickyBar ? 0 : -1}
+            className="flex h-11 w-11 items-center justify-center rounded-md border border-[#E5E0D8] bg-white text-[#1C1917] active:scale-95 transition-all shrink-0 touch-manipulation"
+          >
+            <Heart className={`h-5 w-5 transition-colors duration-150 ${isWishlisted ? 'fill-[#991B1B] text-[#991B1B] kl-heart-active' : ''}`} />
+          </button>
+          <button
+            type="button"
+            onClick={() => handlePrimaryBuy(false)}
+            tabIndex={showStickyBar ? 0 : -1}
+            className="flex-1 rounded-md bg-[#C4A482] py-3 text-xs font-bold uppercase tracking-wider text-white shadow-sm hover:bg-[#B28F6B] active:scale-[0.98] transition-all touch-manipulation"
+          >
+            {isOutOfStock ? 'Notify When Back' : `Add to Cart · ${formatINR(effectiveDisplayPrice)}`}
+          </button>
         </div>
-      )}
+      </div>
 
       {/* Modals */}
       <EMIPlansModal
         open={emiModalOpen}
         onClose={() => setEmiModalOpen(false)}
-        price={product.price}
+        price={effectiveDisplayPrice}
         productName={product.name}
       />
 
       <VirtualTryOnModal
-        open={tryOnModalOpen}
-        onClose={() => setTryOnModalOpen(false)}
-        product={product}
-        onAddToCart={() => addToCart(product, { quantity: 1, openDrawer: true })}
+        open={Boolean(tryOnProduct)}
+        onClose={() => setTryOnProduct(null)}
+        product={tryOnProduct || product}
+        onAddToCart={({ drapeLabel, addonProductId, blouseAddonPrice, blouseLabel }) => {
+          const targetProduct = tryOnProduct || product;
+          addToCart(targetProduct, {
+            quantity: 1,
+            variant: `Drape: ${drapeLabel}`,
+            openDrawer: !addonProductId,
+          });
+          if (addonProductId && blouseAddonPrice > 0) {
+            const addonProduct = PRODUCTS.find((p) => p.id === addonProductId);
+            if (addonProduct) {
+              addToCart(addonProduct, {
+                quantity: 1,
+                variant: blouseLabel,
+                unitPriceOverride: blouseAddonPrice,
+                openDrawer: true,
+              });
+            }
+          }
+        }}
       />
 
       <WriteReviewModal
