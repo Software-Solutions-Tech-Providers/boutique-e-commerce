@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, Minus, Tag, ArrowRight } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Plus, Minus, Tag } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useToast } from '../../context/ToastContext';
 
@@ -12,18 +12,54 @@ export function Footer() {
 
   // New arrivals ticker slide
   const [arrivalSlide, setArrivalSlide] = useState(0);
+  const [slideDir, setSlideDir] = useState<'next' | 'prev'>('next');
+  const [autoAdvance, setAutoAdvance] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+  const touchStartX = useRef<number | null>(null);
+
   const arrivalItems = [
     { title: 'Every Day New Arrivals', subtitle: 'Fresh weaver batches from Kanchipuram & Banaras added daily' },
     { title: 'Pure Silk Mark Verified', subtitle: '100% authentic mulberry & Katan silk with testing certification' },
     { title: '7-Day Doorstep Exchange', subtitle: 'Hassle-free size and drape swaps with free pan-India pickup' },
   ];
 
+  // Auto-advance highlight banner to the right; pauses on hover/focus and stops on manual control
+  useEffect(() => {
+    if (!autoAdvance || isPaused) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const timer = window.setInterval(() => {
+      setSlideDir('next');
+      setArrivalSlide((prev) => (prev + 1) % arrivalItems.length);
+    }, 4500);
+
+    return () => window.clearInterval(timer);
+  }, [autoAdvance, isPaused, arrivalItems.length]);
+
   const handleNextArrival = () => {
+    setAutoAdvance(false);
+    setSlideDir('next');
     setArrivalSlide((prev) => (prev + 1) % arrivalItems.length);
   };
 
   const handlePrevArrival = () => {
+    setAutoAdvance(false);
+    setSlideDir('prev');
     setArrivalSlide((prev) => (prev === 0 ? arrivalItems.length - 1 : prev - 1));
+  };
+
+  const handleBannerTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0]?.clientX ?? null;
+  };
+
+  const handleBannerTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const endX = e.changedTouches[0]?.clientX ?? touchStartX.current;
+    const delta = endX - touchStartX.current;
+    touchStartX.current = null;
+    if (Math.abs(delta) < 35) return;
+    if (delta < 0) handleNextArrival();
+    else handlePrevArrival();
   };
 
   const handleNewsletter = (e: React.FormEvent) => {
@@ -35,29 +71,61 @@ export function Footer() {
 
   return (
     <footer className="border-t border-[#E5E0D8] bg-[#FAF9F6] text-[#1C1917]">
-      {/* 1. Value Proposition Banner Carousel matching Screenshot 2 */}
+      {/* 1. Value Proposition Banner Carousel */}
       <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
-        <div className="flex items-center justify-between rounded-xl border border-[#E5E0D8] bg-[#F2EFE9] p-4 sm:p-5">
+        <div
+          onMouseEnter={() => setIsPaused(true)}
+          onMouseLeave={() => setIsPaused(false)}
+          onFocus={() => setIsPaused(true)}
+          onBlur={() => setIsPaused(false)}
+          onTouchStart={handleBannerTouchStart}
+          onTouchEnd={handleBannerTouchEnd}
+          className="flex items-center justify-between rounded-xl border border-[#E5E0D8] bg-[#F2EFE9] p-4 sm:p-5 touch-pan-y"
+        >
           <button
             type="button"
             onClick={handlePrevArrival}
             aria-label="Previous highlight"
-            className="p-1 text-[#57534E] hover:text-[#1C1917]"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#57534E] hover:bg-white/70 hover:text-[#1C1917] active:scale-95 transition-all cursor-pointer"
           >
             <ChevronLeft className="h-5 w-5" />
           </button>
 
-          <div className="flex flex-1 items-center justify-center gap-3 px-2 text-center">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-xs text-[#14532D]">
-              <Tag className="h-5 w-5" />
-            </span>
-            <div className="text-left">
-              <p className="font-display text-base sm:text-lg font-semibold text-[#1C1917]">
-                {arrivalItems[arrivalSlide].title}
-              </p>
-              <p className="text-xs text-[#57534E] hidden sm:block">
-                {arrivalItems[arrivalSlide].subtitle}
-              </p>
+          <div className="flex-1 overflow-hidden px-2">
+            <div
+              key={arrivalSlide}
+              data-dir={slideDir}
+              className="kl-banner-slide flex items-center justify-center gap-3 text-center"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-xs text-[#14532D]">
+                <Tag className="h-5 w-5" />
+              </span>
+              <div className="text-left min-w-0">
+                <p className="font-display text-base sm:text-lg font-semibold text-[#1C1917] truncate">
+                  {arrivalItems[arrivalSlide].title}
+                </p>
+                <p className="text-xs text-[#57534E] hidden sm:block truncate">
+                  {arrivalItems[arrivalSlide].subtitle}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-2 flex items-center justify-center gap-1.5" aria-label="Highlight slides">
+              {arrivalItems.map((item, idx) => (
+                <button
+                  key={item.title}
+                  type="button"
+                  onClick={() => {
+                    setAutoAdvance(false);
+                    setSlideDir(idx >= arrivalSlide ? 'next' : 'prev');
+                    setArrivalSlide(idx);
+                  }}
+                  aria-label={`Show ${item.title}`}
+                  className={`h-1.5 rounded-full transition-all duration-200 cursor-pointer ${
+                    idx === arrivalSlide ? 'w-4 bg-[#14532D]' : 'w-1.5 bg-[#1C1917]/20 hover:bg-[#1C1917]/40'
+                  }`}
+                />
+              ))}
             </div>
           </div>
 
@@ -65,7 +133,7 @@ export function Footer() {
             type="button"
             onClick={handleNextArrival}
             aria-label="Next highlight"
-            className="p-1 text-[#57534E] hover:text-[#1C1917]"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#57534E] hover:bg-white/70 hover:text-[#1C1917] active:scale-95 transition-all cursor-pointer"
           >
             <ChevronRight className="h-5 w-5" />
           </button>

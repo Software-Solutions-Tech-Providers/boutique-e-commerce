@@ -11,14 +11,14 @@ interface DiscountLadderProps {
 export function DiscountLadder({ tiers, selectedQty, onSelectQty }: DiscountLadderProps) {
   return (
     <div className="space-y-2.5">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#1C1917]">
           Buy More – Save More
         </p>
         <span className="text-xs text-[#14532D] font-medium">Free Shipping above ₹2,500</span>
       </div>
 
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {tiers.map((tier) => {
           const isSelected = selectedQty === tier.quantity;
           return (
@@ -26,7 +26,9 @@ export function DiscountLadder({ tiers, selectedQty, onSelectQty }: DiscountLadd
               key={tier.quantity}
               type="button"
               onClick={() => onSelectQty(tier.quantity)}
-              className={`flex flex-col justify-between rounded-lg border p-3 text-left transition-colors cursor-pointer ${
+              className={`flex flex-col justify-between rounded-lg border p-3 text-left transition-colors cursor-pointer touch-manipulation ${
+                tiers.length === 3 ? 'sm:last:col-span-2 xl:last:col-span-1' : ''
+              } ${
                 isSelected
                   ? 'border-[#14532D] bg-[#14532D]/5 ring-1 ring-[#14532D]'
                   : 'border-[#E5E0D8] bg-white hover:border-[#57534E]'
@@ -41,7 +43,7 @@ export function DiscountLadder({ tiers, selectedQty, onSelectQty }: DiscountLadd
                 </span>
               </div>
 
-              <div className="mt-1.5 flex items-center justify-between gap-2 text-xs">
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 text-xs">
                 {tier.savings > 0 ? (
                   <span className="font-semibold text-[#14532D] tabular-nums">
                     {tier.label || `Save ${formatINR(tier.savings)}`}

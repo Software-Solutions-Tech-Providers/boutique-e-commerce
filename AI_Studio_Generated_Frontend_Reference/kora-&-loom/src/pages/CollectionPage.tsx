@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Search, SlidersHorizontal, X } from 'lucide-react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { ProductCard } from '../components/common/ProductCard';
 import { COLLECTIONS } from '../data/collections';
 import { PRODUCTS } from '../data/products';
 import { OccasionType, ProductCategory } from '../types';
+import { SearchScope, searchProducts } from '../utils/search';
 
 const PAGE_SIZE = 6;
 
@@ -43,6 +44,7 @@ export function CollectionPage() {
   const [searchText, setSearchText] = useState(searchParams.get('q') || '');
   const [page, setPage] = useState(1);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const skuInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const meta = COLLECTIONS.find((c) => c.slug === slug);
@@ -53,34 +55,43 @@ export function CollectionPage() {
 
   useEffect(() => {
     const q = searchParams.get('q') || '';
+    const cat = searchParams.get('cat') as SearchScope | null;
+    const meta = COLLECTIONS.find((c) => c.slug === slug);
     setSearchText(q);
+    if (cat && CATEGORIES.includes(cat)) {
+      setCategory(cat);
+    } else {
+      setCategory(meta?.filterCategory || 'All');
+    }
+    if (searchParams.get('search') === 'true') {
+      window.setTimeout(() => skuInputRef.current?.focus(), 60);
+    }
     setPage(1);
-  }, [searchParams]);
+  }, [searchParams, slug]);
 
   const filteredProducts = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
-    const list = PRODUCTS.filter((p) => {
-      if (category !== 'All') {
-        if (slug === 'cotton-linen') {
-          if (p.category !== 'Cotton Sarees' && p.category !== 'Linen Sarees') return false;
-        } else if (slug === 'blouses-jewellery') {
-          if (p.category !== 'Blouses' && p.category !== 'Jewellery') return false;
-        } else if (p.category !== category) {
-          return false;
-        }
-      }
-      if (occasion !== 'All' && p.occasion !== occasion) return false;
-      if (priceBracket === 'under-1000' && p.price > 1000) return false;
-      if (priceBracket === 'under-1500' && p.price > 1500) return false;
-      if (priceBracket === '1500-2500' && (p.price < 1500 || p.price > 2500)) return false;
-      if (priceBracket === '2500-plus' && p.price < 2500) return false;
+    const q = searchText.trim();
+    const ranked = q ? searchProducts(PRODUCTS, q, 'All') : PRODUCTS.map((product) => ({ product, score: 0 }));
 
-      if (q) {
-        const hay = `${p.name} ${p.sku} ${p.weave} ${p.category} ${p.occasion} ${p.oneLineBenefit}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
+    const list = ranked
+      .filter(({ product: p }) => {
+        if (category !== 'All') {
+          if (slug === 'cotton-linen') {
+            if (p.category !== 'Cotton Sarees' && p.category !== 'Linen Sarees') return false;
+          } else if (slug === 'blouses-jewellery') {
+            if (p.category !== 'Blouses' && p.category !== 'Jewellery') return false;
+          } else if (p.category !== category) {
+            return false;
+          }
+        }
+        if (occasion !== 'All' && p.occasion !== occasion) return false;
+        if (priceBracket === 'under-1000' && p.price > 1000) return false;
+        if (priceBracket === 'under-1500' && p.price > 1500) return false;
+        if (priceBracket === '1500-2500' && (p.price < 1500 || p.price > 2500)) return false;
+        if (priceBracket === '2500-plus' && p.price < 2500) return false;
+        return true;
+      })
+      .map(({ product }) => product);
 
     if (sortBy === 'price-asc') return [...list].sort((a, b) => a.price - b.price);
     if (sortBy === 'price-desc') return [...list].sort((a, b) => b.price - a.price);
@@ -110,6 +121,7 @@ export function CollectionPage() {
         <div className="relative">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#57534E]" />
           <input
+            ref={skuInputRef}
             id="sku-search"
             type="search"
             value={searchText}
@@ -118,7 +130,7 @@ export function CollectionPage() {
               setPage(1);
             }}
             placeholder="e.g. Banarasi, KL-KNC-101"
-            className="w-full rounded-md border border-[#E5E0D8] bg-white py-2 pl-9 pr-3 text-sm text-[#1C1917] focus:border-[#14532D] focus:outline-none"
+            className="w-full rounded-md border border-[#E5E0D8] bg-white py-2 pl-9 pr-3 text-base sm:text-sm text-[#1C1917] focus:border-[#14532D] focus:outline-none"
           />
         </div>
       </div>

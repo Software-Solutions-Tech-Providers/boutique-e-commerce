@@ -102,19 +102,19 @@ export function ReviewSection({ productId, productName, rating, reviewCount }: R
               value={author}
               onChange={(e) => setAuthor(e.target.value)}
               placeholder="Your name"
-              className="rounded-md border border-[#E5E0D8] px-3 py-2 text-sm focus:border-[#14532D] focus:outline-none"
+              className="rounded-md border border-[#E5E0D8] px-3 py-2 text-base sm:text-sm focus:border-[#14532D] focus:outline-none"
             />
             <input
               type="text"
               value={city}
               onChange={(e) => setCity(e.target.value)}
               placeholder="City (e.g. Chennai)"
-              className="rounded-md border border-[#E5E0D8] px-3 py-2 text-sm focus:border-[#14532D] focus:outline-none"
+              className="rounded-md border border-[#E5E0D8] px-3 py-2 text-base sm:text-sm focus:border-[#14532D] focus:outline-none"
             />
             <select
               value={occasion}
               onChange={(e) => setOccasion(e.target.value)}
-              className="rounded-md border border-[#E5E0D8] px-3 py-2 text-sm focus:border-[#14532D] focus:outline-none"
+              className="rounded-md border border-[#E5E0D8] px-3 py-2 text-base sm:text-sm focus:border-[#14532D] focus:outline-none bg-white"
             >
               <option>Wedding &amp; Reception</option>
               <option>Festive Celebration</option>
@@ -131,7 +131,7 @@ export function ReviewSection({ productId, productName, rating, reviewCount }: R
                 type="button"
                 onClick={() => setStars(num)}
                 aria-label={`${num} stars`}
-                className="p-0.5 cursor-pointer"
+                className="p-1 cursor-pointer touch-manipulation"
               >
                 <Star className={`h-5 w-5 ${num <= stars ? 'fill-[#B45309] text-[#B45309]' : 'text-[#D6D3CD]'}`} />
               </button>
@@ -143,7 +143,7 @@ export function ReviewSection({ productId, productName, rating, reviewCount }: R
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Review headline (e.g. Featherlight drape and rich zari)"
-            className="w-full rounded-md border border-[#E5E0D8] px-3 py-2 text-sm focus:border-[#14532D] focus:outline-none"
+            className="w-full rounded-md border border-[#E5E0D8] px-3 py-2 text-base sm:text-sm focus:border-[#14532D] focus:outline-none"
           />
           <textarea
             required
@@ -151,18 +151,18 @@ export function ReviewSection({ productId, productName, rating, reviewCount }: R
             value={comment}
             onChange={(e) => setComment(e.target.value)}
             placeholder="How did the fabric feel, drape, and fit?"
-            className="w-full rounded-md border border-[#E5E0D8] px-3 py-2 text-sm focus:border-[#14532D] focus:outline-none"
+            className="w-full rounded-md border border-[#E5E0D8] px-3 py-2 text-base sm:text-sm focus:border-[#14532D] focus:outline-none"
           />
           <button
             type="submit"
-            className="rounded-md bg-[#14532D] px-5 py-2 text-xs font-semibold text-white hover:bg-[#0F3F22]"
+            className="rounded-md bg-[#14532D] px-5 py-2.5 text-xs font-semibold text-white hover:bg-[#0F3F22] touch-manipulation"
           >
             Submit Review
           </button>
         </form>
       )}
 
-      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         {productReviews.map((rev) => (
           <article key={rev.id} className="rounded-lg border border-[#E5E0D8] bg-white p-5 flex flex-col justify-between gap-3">
             <div className="space-y-2">

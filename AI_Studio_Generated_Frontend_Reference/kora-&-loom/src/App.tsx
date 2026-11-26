@@ -67,7 +67,24 @@ function MainLayout() {
         open={globalTryOnOpen}
         onClose={() => setGlobalTryOnOpen(false)}
         product={featuredProduct}
-        onAddToCart={() => addToCart(featuredProduct, { quantity: 1, openDrawer: true })}
+        onAddToCart={({ drapeLabel, addonProductId, blouseAddonPrice, blouseLabel }) => {
+          addToCart(featuredProduct, {
+            quantity: 1,
+            variant: `Drape: ${drapeLabel}`,
+            openDrawer: !addonProductId,
+          });
+          if (addonProductId && blouseAddonPrice > 0) {
+            const addonProduct = PRODUCTS.find((p) => p.id === addonProductId);
+            if (addonProduct) {
+              addToCart(addonProduct, {
+                quantity: 1,
+                variant: blouseLabel,
+                unitPriceOverride: blouseAddonPrice,
+                openDrawer: true,
+              });
+            }
+          }
+        }}
       />
     </div>
   );
