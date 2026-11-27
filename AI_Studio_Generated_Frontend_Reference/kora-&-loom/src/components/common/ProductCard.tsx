@@ -1,5 +1,5 @@
 import React from 'react';
-import { Heart, ShoppingBag } from 'lucide-react';
+import { Heart, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../../context/StoreContext';
 import { Product } from '../../types';
@@ -9,9 +9,10 @@ import { SafeImage } from './SafeImage';
 interface ProductCardProps {
   product: Product;
   onTryItOn?: () => void;
+  showRemoveFromWishlist?: boolean;
 }
 
-export function ProductCard({ product, onTryItOn }: ProductCardProps) {
+export function ProductCard({ product, onTryItOn: _onTryItOn, showRemoveFromWishlist = false }: ProductCardProps) {
   const { addToCart, wishlistIds, toggleWishlist } = useStore();
   const isWishlisted = wishlistIds.includes(product.id);
   const savingsPct = discountPercent(product.price, product.mrp);
@@ -82,6 +83,18 @@ export function ProductCard({ product, onTryItOn }: ProductCardProps) {
         >
           Add to Cart
         </button>
+
+        {showRemoveFromWishlist && (
+          <button
+            type="button"
+            onClick={handleWishlist}
+            aria-label={`Remove ${product.name} from wishlist`}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-[#E5E0D8] bg-[#FAF9F6] py-1.5 text-[11px] sm:text-xs font-semibold text-[#57534E] hover:border-[#991B1B]/40 hover:bg-[#FEF2F2] hover:text-[#991B1B] transition-colors cursor-pointer"
+          >
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            <span>Remove from Wishlist</span>
+          </button>
+        )}
 
         <div className="space-y-0.5 sm:space-y-1">
           <div className="flex items-center gap-1 text-[10px] sm:text-[11px] text-[#57534E] min-w-0">
