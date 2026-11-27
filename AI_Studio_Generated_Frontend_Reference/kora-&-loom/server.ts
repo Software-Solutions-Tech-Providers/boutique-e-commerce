@@ -22,7 +22,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
 const STORE_CONTEXT = `
 Store Name: Kora & Loom (Handpicked Heritage Sarees)
 Showroom Address: 12 Sample Loom Street, Heritage Market, Sample City – 600001, India.
-Phone / WhatsApp: +91 90000 00000
+Phone / WhatsApp: +91 81245 36947
 Email: hello@koraandloom-demo.example
 Instagram: @koraandloom_demo (https://www.instagram.com/koraandloom_demo)
 Hours: Mon–Sat, 10:00 AM – 8:30 PM IST

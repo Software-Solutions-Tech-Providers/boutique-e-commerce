@@ -1,8 +1,10 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { SareeProduct } from '../data/boutiqueData';
-import { useToast } from './ToastContext';
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { getBoutiqueProductId, getProductToBoutiqueId, SareeProduct } from '../data/boutiqueData';
+import { PRODUCTS } from '../data/products';
+import { getCartKey, useStore } from './StoreContext';
 
 export interface BoutiqueCartItem {
+  cartKey: string;
   productId: string;
   sku: string;
   name: string;
@@ -38,186 +40,111 @@ interface BoutiqueCartContextValue {
   closeQuickView: () => void;
 }
 
-const FREE_DELIVERY_THRESHOLD = 1999;
-const DELIVERY_FEE = 99;
-
 const BoutiqueCartContext = createContext<BoutiqueCartContextValue | null>(null);
 
-export function getBoutiqueCartKey(item: Pick<BoutiqueCartItem, 'productId' | 'optionLabel'>): string {
-  return `${item.productId}::${item.optionLabel}`;
+export function getBoutiqueCartKey(item: Pick<BoutiqueCartItem, 'cartKey' | 'productId' | 'optionLabel'>): string {
+  return item.cartKey || `${item.productId}::${item.optionLabel}`;
 }
 
+/**
+ * Adapts the unified StoreContext cart & wishlist state for the BoutiqueHomePage components
+ * so bag items, wishlists, and promo codes stay in sync across all routes.
+ */
 export function BoutiqueCartProvider({ children }: { children: React.ReactNode }) {
-  const { showToast } = useToast();
-
-  const [cart, setCart] = useState<BoutiqueCartItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('kl_boutique_cart_v1');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const [wishlistIds, setWishlistIds] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('kl_boutique_wishlist_v1');
-      return saved ? JSON.parse(saved) : ['kanchipuram-emerald-temple'];
-    } catch {
-      return [];
-    }
-  });
-
-  const [promoCode, setPromoCode] = useState('');
-  const [isCartOpen, setIsCartOpen] = useState(false);
+  const store = useStore();
   const [quickViewProduct, setQuickViewProduct] = useState<SareeProduct | null>(null);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('kl_boutique_cart_v1', JSON.stringify(cart));
-    } catch {
-      // ignore
-    }
-  }, [cart]);
+  const cart = useMemo<BoutiqueCartItem[]>(
+    () =>
+      store.cart.map((item) => ({
+        cartKey: getCartKey(item),
+        productId: getProductToBoutiqueId(item.productId),
+        sku: item.sku,
+        name: item.name,
+        image: item.image,
+        optionLabel: item.variant || 'Standard',
+        unitPrice: item.unitPrice,
+        originalUnitPrice: item.mrp,
+        quantity: item.quantity,
+      })),
+    [store.cart]
+  );
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('kl_boutique_wishlist_v1', JSON.stringify(wishlistIds));
-    } catch {
-      // ignore
+  const wishlistIds = useMemo(() => {
+    const ids = new Set<string>(store.wishlistIds);
+    for (const id of store.wishlistIds) {
+      ids.add(getProductToBoutiqueId(id));
     }
-  }, [wishlistIds]);
+    return Array.from(ids);
+  }, [store.wishlistIds]);
 
   const addToCart = useCallback(
     (product: SareeProduct, optionLabel?: string, quantity = 1) => {
       const chosenOpt = optionLabel || product.defaultOption;
       const optObj = product.drapeOptions.find((o) => o.label === chosenOpt) || product.drapeOptions[0];
       const unitPrice = Math.round(product.price * optObj.multiplier);
-      const originalUnitPrice = Math.round(product.originalPrice * optObj.multiplier);
+      const canonicalId = getBoutiqueProductId(product);
+      const canonicalProduct = PRODUCTS.find((p) => p.id === canonicalId) ?? {
+        id: canonicalId,
+        sku: product.sku,
+        name: product.name,
+        category: 'Silk Sarees' as const,
+        weave: product.fabricSpec,
+        occasion: 'Festive' as const,
+        price: product.price,
+        mrp: product.originalPrice,
+        oneLineBenefit: product.shortDesc,
+        rating: product.rating,
+        reviewCount: product.reviewCount,
+        blouseIncluded: product.blouseDetails,
+        lengthSpec: '6.4m',
+        fabricCare: 'Dry clean recommended.',
+        images: [{ url: product.image, label: 'Product Showcase' as const, alt: product.name }],
+        hasVideoPreview: false,
+        videoCaption: '',
+        benefits: [],
+        faqs: [],
+        complementaryIds: [],
+      };
 
-      setCart((prev) => {
-        const key = `${product.id}::${optObj.label}`;
-        const idx = prev.findIndex((i) => getBoutiqueCartKey(i) === key);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = { ...next[idx], quantity: next[idx].quantity + quantity };
-          return next;
-        }
-        return [
-          ...prev,
-          {
-            productId: product.id,
-            sku: product.sku,
-            name: product.name,
-            image: product.image,
-            optionLabel: optObj.label,
-            unitPrice,
-            originalUnitPrice,
-            quantity,
-          },
-        ];
+      store.addToCart(canonicalProduct, {
+        quantity,
+        variant: optObj.label,
+        unitPriceOverride: unitPrice,
+        openDrawer: false,
       });
-
-      showToast(`Added ${product.name} to bag`);
     },
-    [showToast]
-  );
-
-  const updateQty = useCallback((key: string, nextQty: number) => {
-    setCart((prev) => {
-      if (nextQty <= 0) return prev.filter((i) => getBoutiqueCartKey(i) !== key);
-      return prev.map((i) => (getBoutiqueCartKey(i) === key ? { ...i, quantity: nextQty } : i));
-    });
-  }, []);
-
-  const removeItem = useCallback(
-    (key: string) => {
-      setCart((prev) => prev.filter((i) => getBoutiqueCartKey(i) !== key));
-      showToast('Removed from bag', 'info');
-    },
-    [showToast]
-  );
-
-  const clearCart = useCallback(() => {
-    setCart([]);
-    setPromoCode('');
-  }, []);
-
-  const cartCount = useMemo(() => cart.reduce((s, i) => s + i.quantity, 0), [cart]);
-  const subtotal = useMemo(() => cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0), [cart]);
-
-  const promoDiscount = useMemo(() => {
-    if (!promoCode || subtotal === 0) return 0;
-    if (promoCode === 'KORA10' && subtotal >= 3999) return Math.round(subtotal * 0.1);
-    if (promoCode === 'TROUSSEAU15' && subtotal >= 6999) return Math.round(subtotal * 0.15);
-    return 0;
-  }, [promoCode, subtotal]);
-
-  const afterPromo = Math.max(0, subtotal - promoDiscount);
-  const shippingFee = subtotal === 0 || afterPromo >= FREE_DELIVERY_THRESHOLD ? 0 : DELIVERY_FEE;
-  const freeShippingRemaining = Math.max(0, FREE_DELIVERY_THRESHOLD - afterPromo);
-  const totalPayable = afterPromo + shippingFee;
-
-  const applyPromo = useCallback(
-    (rawCode: string) => {
-      const code = rawCode.trim().toUpperCase();
-      if (!code) return { ok: false, message: 'Enter a promo code.' };
-      if (code === 'KORA10') {
-        if (subtotal < 3999) {
-          return { ok: false, message: 'Add ₹3,999+ to unlock 10% off with KORA10.' };
-        }
-        setPromoCode('KORA10');
-        showToast('KORA10 applied — 10% off!');
-        return { ok: true, message: '10% boutique discount applied.' };
-      }
-      if (code === 'TROUSSEAU15') {
-        if (subtotal < 6999) {
-          return { ok: false, message: 'Add ₹6,999+ to unlock 15% off with TROUSSEAU15.' };
-        }
-        setPromoCode('TROUSSEAU15');
-        showToast('TROUSSEAU15 applied — 15% off!');
-        return { ok: true, message: '15% bridal trousseau discount applied.' };
-      }
-      return { ok: false, message: 'Try KORA10 (on ₹3,999+) or TROUSSEAU15 (on ₹6,999+).' };
-    },
-    [subtotal, showToast]
+    [store]
   );
 
   const toggleWishlist = useCallback(
     (productId: string, name?: string) => {
-      setWishlistIds((prev) => {
-        const exists = prev.includes(productId);
-        if (exists) {
-          showToast(name ? `Removed ${name} from wishlist` : 'Removed from wishlist', 'info');
-          return prev.filter((id) => id !== productId);
-        }
-        showToast(name ? `Saved ${name} to wishlist` : 'Saved to wishlist');
-        return [productId, ...prev];
-      });
+      const canonicalId = getBoutiqueProductId({ id: productId });
+      store.toggleWishlist(canonicalId, name);
     },
-    [showToast]
+    [store]
   );
 
   return (
     <BoutiqueCartContext.Provider
       value={{
         cart,
-        cartCount,
-        subtotal,
-        promoCode,
-        promoDiscount,
-        shippingFee,
-        freeShippingRemaining,
-        totalPayable,
-        isCartOpen,
-        openCart: () => setIsCartOpen(true),
-        closeCart: () => setIsCartOpen(false),
+        cartCount: store.cartCount,
+        subtotal: store.cartSubtotal,
+        promoCode: store.promoCode,
+        promoDiscount: store.promoDiscount,
+        shippingFee: store.shippingFee,
+        freeShippingRemaining: store.freeShippingRemaining,
+        totalPayable: store.cartTotal,
+        isCartOpen: store.isCartOpen,
+        openCart: store.openCart,
+        closeCart: store.closeCart,
         addToCart,
-        updateQty,
-        removeItem,
-        clearCart,
-        applyPromo,
-        clearPromo: () => setPromoCode(''),
+        updateQty: store.updateCartQuantity,
+        removeItem: store.removeFromCart,
+        clearCart: store.clearCart,
+        applyPromo: store.applyPromoCode,
+        clearPromo: store.clearPromoCode,
         wishlistIds,
         toggleWishlist,
         quickViewProduct,

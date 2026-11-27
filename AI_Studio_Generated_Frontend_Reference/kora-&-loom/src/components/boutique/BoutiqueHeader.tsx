@@ -9,6 +9,7 @@ import {
   User,
   X,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { BoutiqueLogoMark } from './BoutiqueLogoMark';
@@ -17,6 +18,7 @@ import {
   BOUTIQUE_CATEGORIES,
   BoutiqueCategory,
   BRAND_INFO,
+  getBoutiqueProductDetailPath,
   SAREE_PRODUCTS,
 } from '../../data/boutiqueData';
 import { formatINR } from '../../utils/formatters';
@@ -43,7 +45,7 @@ export function BoutiqueHeader({
   onOpenAccount,
   onOpenWishlist,
 }: BoutiqueHeaderProps) {
-  const { cartCount, openCart, wishlistIds, openQuickView } = useBoutiqueCart();
+  const { cartCount, openCart, wishlistIds } = useBoutiqueCart();
   const { language, setLanguage, t } = useLanguage();
   const [menuOpen, setMenuOpen] = useState(false);
   const [drawerSection, setDrawerSection] = useState<'sarees' | 'bridal' | null>('sarees');
@@ -115,14 +117,11 @@ export function BoutiqueHeader({
         >
           <div className="grid max-h-72 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
             {searchMatches.map((item) => (
-              <button
+              <Link
                 key={item.id}
-                type="button"
-                onClick={() => {
-                  onToggleSearch(false);
-                  openQuickView(item);
-                }}
-                className="flex items-center gap-3 rounded-xl border border-[#E6DDD0]/80 bg-[#FCF9F4] p-2 text-left hover:border-[#7C1D26]/40 cursor-pointer"
+                to={getBoutiqueProductDetailPath(item)}
+                onClick={() => onToggleSearch(false)}
+                className="flex items-center gap-3 rounded-xl border border-[#E6DDD0]/80 bg-[#FCF9F4] p-2 text-left hover:border-[#7C1D26]/40"
               >
                 <SafeImage
                   src={item.image}
@@ -133,7 +132,7 @@ export function BoutiqueHeader({
                   <p className="truncate text-xs font-semibold text-[#231712]">{item.name}</p>
                   <p className="text-[11px] text-[#635147] tabular-nums">{formatINR(item.price)}</p>
                 </div>
-              </button>
+              </Link>
             ))}
             {searchMatches.length === 0 && (
               <p className="px-2 py-2 text-xs text-[#635147]">{t.noMatches}</p>
@@ -387,6 +386,14 @@ export function BoutiqueHeader({
               </button>
 
               <div className="my-2 border-t border-[#E6DDD0]" />
+
+              <Link
+                to="/collections"
+                onClick={() => setMenuOpen(false)}
+                className="flex min-h-[42px] items-center rounded-lg px-3 text-left font-semibold text-[#7C1D26] hover:bg-[#F4EDE2]"
+              >
+                {t.viewAllCollections}
+              </Link>
 
               <button
                 type="button"

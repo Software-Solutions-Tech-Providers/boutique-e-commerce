@@ -252,6 +252,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (!promoCode || cartSubtotal === 0) return 0;
     if (promoCode === 'DIWALI10') return Math.round(cartSubtotal * 0.1);
     if (promoCode === 'LOOM200' && cartSubtotal >= 1500) return 200;
+    if (promoCode === 'KORA10' && cartSubtotal >= 3999) return Math.round(cartSubtotal * 0.1);
+    if (promoCode === 'TROUSSEAU15' && cartSubtotal >= 6999) return Math.round(cartSubtotal * 0.15);
     return 0;
   }, [promoCode, cartSubtotal]);
 
@@ -277,7 +279,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         showToast('Applied LOOM200 (₹200 off)');
         return { ok: true, message: '₹200 instant savings applied.' };
       }
-      return { ok: false, message: 'Invalid code. Try DIWALI10 or LOOM200.' };
+      if (code === 'KORA10') {
+        if (cartSubtotal < 3999) {
+          return { ok: false, message: 'Add ₹3,999+ to unlock 10% off with KORA10.' };
+        }
+        setPromoCode(code);
+        showToast('KORA10 applied — 10% off!');
+        return { ok: true, message: '10% boutique discount applied.' };
+      }
+      if (code === 'TROUSSEAU15') {
+        if (cartSubtotal < 6999) {
+          return { ok: false, message: 'Add ₹6,999+ to unlock 15% off with TROUSSEAU15.' };
+        }
+        setPromoCode(code);
+        showToast('TROUSSEAU15 applied — 15% off!');
+        return { ok: true, message: '15% bridal trousseau discount applied.' };
+      }
+      return { ok: false, message: 'Invalid code. Try DIWALI10, LOOM200, KORA10, or TROUSSEAU15.' };
     },
     [cartSubtotal, showToast]
   );

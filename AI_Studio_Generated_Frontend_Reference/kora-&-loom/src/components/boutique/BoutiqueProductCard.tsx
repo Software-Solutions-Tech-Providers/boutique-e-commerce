@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Eye, Heart, Minus, Plus, ShoppingBag, Star } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
-import { SareeProduct } from '../../data/boutiqueData';
+import { getBoutiqueProductDetailPath, SareeProduct } from '../../data/boutiqueData';
 import { formatINR } from '../../utils/formatters';
 import { SafeImage } from '../common/SafeImage';
 
@@ -15,6 +16,7 @@ export function BoutiqueProductCard({ product }: BoutiqueProductCardProps) {
   const { t } = useLanguage();
   const [qty, setQty] = useState(1);
   const isWishlisted = wishlistIds.includes(product.id);
+  const productPath = getBoutiqueProductDetailPath(product);
 
   const inBagQty = cart
     .filter((i) => i.productId === product.id)
@@ -24,11 +26,10 @@ export function BoutiqueProductCard({ product }: BoutiqueProductCardProps) {
     <article className="group flex h-full flex-col overflow-hidden rounded-xl border border-[#E6DDD0] bg-white transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
       {/* 3:4 Portrait Saree Image with secondary weave hover */}
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-[#F4EDE2]">
-        <button
-          type="button"
-          onClick={() => openQuickView(product)}
-          aria-label={`Quick view ${product.name}`}
-          className="block h-full w-full text-left cursor-pointer"
+        <Link
+          to={productPath}
+          aria-label={`View ${product.name}`}
+          className="block h-full w-full text-left"
         >
           <SafeImage
             src={product.image}
@@ -44,7 +45,7 @@ export function BoutiqueProductCard({ product }: BoutiqueProductCardProps) {
             loading="lazy"
             className="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100"
           />
-        </button>
+        </Link>
 
         <div className="absolute top-2 right-2 flex flex-col gap-1.5">
           <button
@@ -78,13 +79,12 @@ export function BoutiqueProductCard({ product }: BoutiqueProductCardProps) {
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={() => openQuickView(product)}
-            className="block text-left font-display text-xs sm:text-sm font-semibold leading-snug text-[#231712] hover:text-[#7C1D26] line-clamp-2 cursor-pointer"
+          <Link
+            to={productPath}
+            className="block text-left font-display text-xs sm:text-sm font-semibold leading-snug text-[#231712] hover:text-[#7C1D26] line-clamp-2"
           >
             {product.name}
-          </button>
+          </Link>
         </div>
 
         <div className="space-y-1.5 pt-1 border-t border-[#E6DDD0]/80">

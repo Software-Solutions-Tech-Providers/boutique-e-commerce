@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { CheckCircle2, Heart, ShoppingBag, Smartphone, Trash2, X } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Heart, ShoppingBag, Smartphone, Trash2, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
-import { BRAND_INFO, SAREE_PRODUCTS } from '../../data/boutiqueData';
+import { BRAND_INFO, getBoutiqueProductDetailPath, SAREE_PRODUCTS } from '../../data/boutiqueData';
 import { formatINR } from '../../utils/formatters';
 import { SafeImage } from '../common/SafeImage';
 
@@ -21,7 +22,7 @@ export function BoutiqueUtilityModals({
   onCloseAccount,
 }: BoutiqueUtilityModalsProps) {
   const { showToast } = useToast();
-  const { wishlistIds, toggleWishlist, addToCart, openQuickView, openCart } = useBoutiqueCart();
+  const { wishlistIds, toggleWishlist, addToCart, openCart } = useBoutiqueCart();
   const { t } = useLanguage();
 
   const [phoneInput, setPhoneInput] = useState('');
@@ -95,18 +96,21 @@ export function BoutiqueUtilityModals({
                       key={product.id}
                       className="flex items-center gap-3 rounded-xl border border-[#E6DDD0] bg-white p-3"
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onCloseWishlist();
-                          openQuickView(product);
-                        }}
-                        className="h-20 w-16 shrink-0 overflow-hidden rounded-lg bg-[#F4EDE2] cursor-pointer"
+                      <Link
+                        to={getBoutiqueProductDetailPath(product)}
+                        onClick={onCloseWishlist}
+                        className="h-20 w-16 shrink-0 overflow-hidden rounded-lg bg-[#F4EDE2]"
                       >
                         <SafeImage src={product.image} alt={product.name} className="h-full w-full object-cover" />
-                      </button>
+                      </Link>
                       <div className="min-w-0 flex-1 space-y-1">
-                        <p className="truncate text-sm font-semibold text-[#231712]">{product.name}</p>
+                        <Link
+                          to={getBoutiqueProductDetailPath(product)}
+                          onClick={onCloseWishlist}
+                          className="block truncate text-sm font-semibold text-[#231712] hover:text-[#7C1D26]"
+                        >
+                          {product.name}
+                        </Link>
                         <p className="text-xs text-[#635147] tabular-nums">
                           {product.sku} · {formatINR(product.price)}
                         </p>
@@ -138,6 +142,16 @@ export function BoutiqueUtilityModals({
                   ))}
                 </ul>
               )}
+            </div>
+            <div className="border-t border-[#E6DDD0] bg-white px-5 py-3 flex justify-end">
+              <Link
+                to="/wishlist"
+                onClick={onCloseWishlist}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#7C1D26] hover:underline"
+              >
+                <span>Open Full Wishlist Page</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
             </div>
           </div>
         </div>
@@ -246,6 +260,16 @@ export function BoutiqueUtilityModals({
                 </button>
               </form>
             )}
+            <div className="mt-4 border-t border-[#E6DDD0] pt-3 text-center">
+              <Link
+                to="/account"
+                onClick={onCloseAccount}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#7C1D26] hover:underline"
+              >
+                <span>Open Full Account &amp; Orders</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
           </div>
         </div>
       )}
