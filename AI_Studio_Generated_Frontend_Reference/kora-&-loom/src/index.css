@@ -11,12 +11,39 @@
   --color-maroon: #7C1D26;
   --color-maroon-dark: #5E141B;
   --color-saffron: #B4690E;
+  --color-sand: #C4A482;
+  --color-sand-hover: #B28F6B;
+  --color-sand-light: #F5EFEB;
+  --color-wine: #5B1B29;
+  --color-wine-hover: #45121E;
 }
 
 @layer base {
   html {
     font-family: var(--font-sans);
     scroll-behavior: smooth;
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+
+  body {
+    overflow-x: clip;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  a {
+    touch-action: manipulation;
+  }
+
+  button,
+  [role="button"] {
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   h1, h2, h3, .font-display {
@@ -28,6 +55,53 @@
   }
 }
 
+:root {
+  --pdp-sticky-offset: 0px;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (max-width: 767px) {
+  body[data-pdp-sticky="true"] {
+    --pdp-sticky-offset: 4.5rem;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.ease-settle {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root {
+  --pdp-sticky-offset: 0px;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (max-width: 767px) {
+  body[data-pdp-sticky="true"] {
+    --pdp-sticky-offset: 4.5rem;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
@@ -36,11 +110,273 @@
   scrollbar-width: none;
 }
 
+/* 1. Modal Backdrop & Panel Entrance */
+.kl-modal-backdrop {
+  transition: opacity 180ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.kl-modal-panel {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@media (min-width: 640px) {
+  .kl-modal-panel {
+    @starting-style {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+  }
+}
+
+/* 2. Mobile Sticky Bar Enter / Exit */
+.kl-sticky-bar {
+  opacity: 0;
+  transform: translateY(16px);
+  pointer-events: none;
+  transition: opacity 220ms var(--ease-drawer), transform 220ms var(--ease-drawer);
+}
+
+.kl-sticky-bar[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* 3. Gallery Image Swap (directional horizontal slide-fade) & Pointer-Gated Hover Zoom */
+.kl-gallery-swap {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.kl-gallery-swap[data-dir="next"] {
+  @starting-style {
+    opacity: 0.72;
+    transform: translateX(18px);
+  }
+}
+
+.kl-gallery-swap[data-dir="prev"] {
+  @starting-style {
+    opacity: 0.72;
+    transform: translateX(-18px);
+  }
+}
+
+.kl-gallery-zoom {
+  transition: transform 300ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .group:hover .kl-gallery-zoom {
+    transform: scale(1.02);
+  }
+}
+
+/* 4. Smooth Accordion Collapse */
+.kl-accordion-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--ease-out);
+}
+
+.kl-accordion-content[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.kl-accordion-inner {
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out);
+}
+
+.kl-accordion-content[data-open="true"] > .kl-accordion-inner {
+  opacity: 1;
+}
+
+/* 5. Wishlist Heart Settle */
+@keyframes klHeartSettle {
+  0% {
+    transform: scale(0.9);
+  }
+  55% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.kl-heart-active {
+  animation: klHeartSettle 180ms var(--ease-out);
+}
+
+/* 6. Footer Value Proposition Banner Slide */
+.kl-banner-slide {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.kl-banner-slide[data-dir="next"] {
+  @starting-style {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+.kl-banner-slide[data-dir="prev"] {
+  @starting-style {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}
+
+/* 1. Modal Backdrop & Panel Entrance */
+.kl-modal-backdrop {
+  transition: opacity 180ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.kl-modal-panel {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@media (min-width: 640px) {
+  .kl-modal-panel {
+    @starting-style {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+  }
+}
+
+/* 2. Mobile Sticky Bar Enter / Exit */
+.kl-sticky-bar {
+  opacity: 0;
+  transform: translateY(16px);
+  pointer-events: none;
+  transition: opacity 220ms var(--ease-drawer), transform 220ms var(--ease-drawer);
+}
+
+.kl-sticky-bar[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* 3. Gallery Image Swap (directional horizontal slide-fade) & Pointer-Gated Hover Zoom */
+.kl-gallery-swap {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.kl-gallery-swap[data-dir="next"] {
+  @starting-style {
+    opacity: 0.72;
+    transform: translateX(18px);
+  }
+}
+
+.kl-gallery-swap[data-dir="prev"] {
+  @starting-style {
+    opacity: 0.72;
+    transform: translateX(-18px);
+  }
+}
+
+.kl-gallery-zoom {
+  transition: transform 300ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .group:hover .kl-gallery-zoom {
+    transform: scale(1.02);
+  }
+}
+
+/* 4. Smooth Accordion Collapse */
+.kl-accordion-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--ease-out);
+}
+
+.kl-accordion-content[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.kl-accordion-inner {
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out);
+}
+
+.kl-accordion-content[data-open="true"] > .kl-accordion-inner {
+  opacity: 1;
+}
+
+/* 5. Wishlist Heart Settle */
+@keyframes klHeartSettle {
+  0% {
+    transform: scale(0.9);
+  }
+  55% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.kl-heart-active {
+  animation: klHeartSettle 180ms var(--ease-out);
+}
+
+/* 6. Footer Value Proposition Banner Slide */
+.kl-banner-slide {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.kl-banner-slide[data-dir="next"] {
+  @starting-style {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+.kl-banner-slide[data-dir="prev"] {
+  @starting-style {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Gentler opacity-only transitions for comprehension without spatial movement */
+  .kl-modal-backdrop,
+  .kl-modal-panel,
+  .kl-sticky-bar,
+  .kl-gallery-swap,
+  .kl-accordion-inner,
+  .kl-banner-slide {
+    transition-property: opacity !important;
+    transition-duration: 120ms !important;
+    transform: none !important;
   }
 }

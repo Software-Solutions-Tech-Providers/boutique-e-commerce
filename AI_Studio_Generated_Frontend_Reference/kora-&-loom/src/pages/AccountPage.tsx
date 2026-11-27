@@ -46,7 +46,7 @@ export function AccountPage() {
       register({
         name: name.trim() || 'Boutique Guest',
         email: email.trim(),
-        phone: phone.trim() || '9840123456',
+        phone: phone.trim() || '8124536947',
         address: '18 Kasturi Ranga Road',
         city: 'Chennai',
         pincode: '600018',
@@ -228,18 +228,16 @@ export function AccountPage() {
                 <button
                   type="button"
                   onClick={() => setAuthMode('login')}
-                  className={`flex-1 rounded py-1.5 font-semibold cursor-pointer ${
-                    authMode === 'login' ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
-                  }`}
+                  className={`flex-1 rounded py-1.5 font-semibold cursor-pointer ${authMode === 'login' ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
+                    }`}
                 >
                   Sign In
                 </button>
                 <button
                   type="button"
                   onClick={() => setAuthMode('register')}
-                  className={`flex-1 rounded py-1.5 font-semibold cursor-pointer ${
-                    authMode === 'register' ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
-                  }`}
+                  className={`flex-1 rounded py-1.5 font-semibold cursor-pointer ${authMode === 'register' ? 'bg-white text-[#1C1917] shadow-sm' : 'text-[#57534E]'
+                    }`}
                 >
                   Create Account
                 </button>
@@ -311,11 +309,10 @@ export function AccountPage() {
               <button
                 type="button"
                 onClick={() => toggleReorderReminder(careProduct.id, careProduct.name)}
-                className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  isCareReminderOn
-                    ? 'bg-[#14532D] text-white'
-                    : 'border border-[#E5E0D8] bg-white text-[#1C1917]'
-                }`}
+                className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${isCareReminderOn
+                  ? 'bg-[#14532D] text-white'
+                  : 'border border-[#E5E0D8] bg-white text-[#1C1917]'
+                  }`}
               >
                 {isCareReminderOn ? 'Active' : 'Enable'}
               </button>
@@ -360,11 +357,10 @@ export function AccountPage() {
                 <button
                   type="button"
                   onClick={() => setExchangeResolution('Instant 110% Store Credit')}
-                  className={`w-full rounded-lg border p-3 text-left cursor-pointer ${
-                    exchangeResolution === 'Instant 110% Store Credit'
-                      ? 'border-[#14532D] bg-[#14532D]/5 ring-1 ring-[#14532D]'
-                      : 'border-[#E5E0D8]'
-                  }`}
+                  className={`w-full rounded-lg border p-3 text-left cursor-pointer ${exchangeResolution === 'Instant 110% Store Credit'
+                    ? 'border-[#14532D] bg-[#14532D]/5 ring-1 ring-[#14532D]'
+                    : 'border-[#E5E0D8]'
+                    }`}
                 >
                   <p className="text-sm font-semibold text-[#14532D]">
                     Instant 110% Store Credit (Recommended)
@@ -377,11 +373,10 @@ export function AccountPage() {
                 <button
                   type="button"
                   onClick={() => setExchangeResolution('Size/Drape Exchange')}
-                  className={`w-full rounded-lg border p-3 text-left cursor-pointer ${
-                    exchangeResolution === 'Size/Drape Exchange'
-                      ? 'border-[#14532D] bg-[#14532D]/5 ring-1 ring-[#14532D]'
-                      : 'border-[#E5E0D8]'
-                  }`}
+                  className={`w-full rounded-lg border p-3 text-left cursor-pointer ${exchangeResolution === 'Size/Drape Exchange'
+                    ? 'border-[#14532D] bg-[#14532D]/5 ring-1 ring-[#14532D]'
+                    : 'border-[#E5E0D8]'
+                    }`}
                 >
                   <p className="text-sm font-semibold text-[#1C1917]">Free Size / Drape Replacement</p>
                   <p className="text-xs text-[#57534E] mt-0.5">
