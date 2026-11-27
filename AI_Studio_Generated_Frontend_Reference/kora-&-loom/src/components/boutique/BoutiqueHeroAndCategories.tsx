@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, ShieldCheck, Sparkles, Tag, Truck } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useLanguage } from '../../context/LanguageContext';
 import {
   BOUTIQUE_CATEGORIES,
   BOUTIQUE_IMAGES,
   BoutiqueCategory,
+  getBoutiqueCategoryPath,
   SPECIAL_BOUTIQUE_COLLECTIONS,
 } from '../../data/boutiqueData';
 import { SafeImage } from '../common/SafeImage';
@@ -140,12 +142,7 @@ export function BoutiqueStickyCategoryNav({
   );
 }
 
-interface BoutiqueCategoryStripProps {
-  activeCategory: 'All' | BoutiqueCategory;
-  onSelectCategory: (cat: 'All' | BoutiqueCategory) => void;
-}
-
-export function BoutiqueCategoryStrip({ activeCategory, onSelectCategory }: BoutiqueCategoryStripProps) {
+export function BoutiqueCategoryStrip() {
   const { t } = useLanguage();
   const [expandedCollections, setExpandedCollections] = useState(false);
 
@@ -156,9 +153,6 @@ export function BoutiqueCategoryStrip({ activeCategory, onSelectCategory }: Bout
           <h2 className="font-display text-lg sm:text-2xl font-semibold text-[#231712]">
             {t.shopByCategory}
           </h2>
-          {activeCategory !== 'All' && (
-            <span className="text-xs font-semibold text-[#7C1D26]">{t.categories[activeCategory]}</span>
-          )}
         </div>
 
         <button
@@ -176,50 +170,41 @@ export function BoutiqueCategoryStrip({ activeCategory, onSelectCategory }: Bout
       </div>
 
       <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6 sm:gap-2.5 lg:gap-3">
-        {BOUTIQUE_CATEGORIES.map((tile) => {
-          const isSelected = activeCategory === tile.id;
-          return (
-            <button
-              key={tile.id}
-              type="button"
-              onClick={() => onSelectCategory(tile.id)}
-              className={`group flex flex-col overflow-hidden rounded-lg sm:rounded-xl border text-left transition-all cursor-pointer ${
-                isSelected
-                  ? 'border-[#7C1D26] ring-1 ring-[#7C1D26] bg-white'
-                  : 'border-[#E6DDD0] bg-white hover:border-[#635147]'
-              }`}
-            >
-              <div className="aspect-square sm:aspect-[4/5] w-full overflow-hidden bg-[#F4EDE2]">
-                <SafeImage
-                  src={tile.image}
-                  alt={t.categories[tile.id]}
-                  className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                />
-              </div>
-              <div className="p-1.5 sm:p-2 space-y-0.5">
-                <h3 className="font-sans text-[11px] sm:text-xs font-semibold text-[#231712] group-hover:text-[#7C1D26] line-clamp-1">
-                  {t.categories[tile.id]}
-                </h3>
-                {expandedCollections && (
-                  <p className="text-[10px] text-[#635147] line-clamp-1">
-                    {tile.subtitle} · {tile.itemCount}
-                  </p>
-                )}
-              </div>
-            </button>
-          );
-        })}
+        {BOUTIQUE_CATEGORIES.map((tile) => (
+          <Link
+            key={tile.id}
+            to={getBoutiqueCategoryPath(tile.id)}
+            className="group flex flex-col overflow-hidden rounded-lg sm:rounded-xl border border-[#E6DDD0] bg-white text-left transition-all hover:border-[#7C1D26]"
+          >
+            <div className="aspect-square sm:aspect-[4/5] w-full overflow-hidden bg-[#F4EDE2]">
+              <SafeImage
+                src={tile.image}
+                alt={t.categories[tile.id]}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+              />
+            </div>
+            <div className="p-1.5 sm:p-2 space-y-0.5">
+              <h3 className="font-sans text-[11px] sm:text-xs font-semibold text-[#231712] group-hover:text-[#7C1D26] line-clamp-1">
+                {t.categories[tile.id]}
+              </h3>
+              {expandedCollections && (
+                <p className="text-[10px] text-[#635147] line-clamp-1">
+                  {tile.subtitle} · {tile.itemCount}
+                </p>
+              )}
+            </div>
+          </Link>
+        ))}
       </div>
 
       {/* Expanded Special Curated Collections */}
       {expandedCollections && (
         <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-3 sm:gap-3">
           {SPECIAL_BOUTIQUE_COLLECTIONS.map((col) => (
-            <button
+            <Link
               key={col.id}
-              type="button"
-              onClick={() => onSelectCategory(col.filterCategory)}
-              className="group flex items-center gap-3 overflow-hidden rounded-xl border border-[#E6DDD0] bg-white p-2 text-left hover:border-[#7C1D26] transition-colors cursor-pointer"
+              to={getBoutiqueCategoryPath(col.filterCategory)}
+              className="group flex items-center gap-3 overflow-hidden rounded-xl border border-[#E6DDD0] bg-white p-2 text-left hover:border-[#7C1D26] transition-colors"
             >
               <SafeImage
                 src={col.image}
@@ -236,7 +221,7 @@ export function BoutiqueCategoryStrip({ activeCategory, onSelectCategory }: Bout
                   <ArrowRight className="h-3 w-3" />
                 </span>
               </div>
-            </button>
+            </Link>
           ))}
         </div>
       )}

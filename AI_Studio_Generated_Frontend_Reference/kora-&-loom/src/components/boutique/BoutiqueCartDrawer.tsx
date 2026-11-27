@@ -1,8 +1,11 @@
 import React, { useState } from 'react';
 import { CheckCircle2, Minus, Plus, ShoppingBag, Trash2, Truck, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { getBoutiqueCartKey, useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
+import { getBoutiqueProductDetailPath } from '../../data/boutiqueData';
+import { FREE_SHIPPING_THRESHOLD } from '../../data/products';
 import { formatINR } from '../../utils/formatters';
 import { SafeImage } from '../common/SafeImage';
 
@@ -37,7 +40,10 @@ export function BoutiqueCartDrawer() {
 
   if (!isCartOpen) return null;
 
-  const progress = Math.min(100, Math.round(((1999 - freeShippingRemaining) / 1999) * 100));
+  const progress = Math.min(
+    100,
+    Math.round(((FREE_SHIPPING_THRESHOLD - freeShippingRemaining) / FREE_SHIPPING_THRESHOLD) * 100)
+  );
 
   const handleApplyPromo = (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,7 +100,7 @@ export function BoutiqueCartDrawer() {
               <span>Unlocked! Free Express Insured Delivery across India.</span>
             ) : (
               <span>
-                Add <strong className="tabular-nums">{formatINR(freeShippingRemaining)}</strong> more for Free Delivery (₹1,999+)
+                Add <strong className="tabular-nums">{formatINR(freeShippingRemaining)}</strong> more for Free Delivery ({formatINR(FREE_SHIPPING_THRESHOLD)}+)
               </span>
             )}
           </div>
@@ -210,7 +216,13 @@ export function BoutiqueCartDrawer() {
                     <div className="flex flex-1 flex-col justify-between min-w-0">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-[#231712] truncate">{item.name}</p>
+                          <Link
+                            to={getBoutiqueProductDetailPath({ id: item.productId })}
+                            onClick={handleClose}
+                            className="block text-sm font-semibold text-[#231712] hover:text-[#7C1D26] truncate"
+                          >
+                            {item.name}
+                          </Link>
                           <p className="text-xs text-[#635147] truncate">
                             {item.sku} · {item.optionLabel}
                           </p>
@@ -309,6 +321,13 @@ export function BoutiqueCartDrawer() {
             >
               {t.proceedCheckout}
             </button>
+            <Link
+              to="/checkout"
+              onClick={handleClose}
+              className="flex min-h-[42px] w-full items-center justify-center rounded-lg border border-[#E6DDD0] bg-[#FCF9F4] py-2.5 text-xs font-semibold text-[#231712] hover:bg-[#F4EDE2]"
+            >
+              Full Checkout &amp; Address Book
+            </Link>
           </div>
         )}
       </aside>

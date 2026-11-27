@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
 import { ArrowRight, ChevronLeft, ChevronRight, Eye, Heart, Minus, Plus, ShoppingBag, Sparkles, Star } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
-import { BoutiqueCategory, SareeProduct } from '../../data/boutiqueData';
+import { BoutiqueCategory, getBoutiqueProductDetailPath, SareeProduct } from '../../data/boutiqueData';
 import { formatINR } from '../../utils/formatters';
 import { SafeImage } from '../common/SafeImage';
 import { BoutiqueProductCard } from './BoutiqueProductCard';
@@ -31,16 +32,17 @@ function HorizontalSpotlightCard({ product }: { product: SareeProduct }) {
   const { t } = useLanguage();
   const [qty, setQty] = useState(1);
   const isWishlisted = wishlistIds.includes(product.id);
+  const productPath = getBoutiqueProductDetailPath(product);
 
   return (
     <article className="grid grid-cols-1 overflow-hidden rounded-xl border border-[#E6DDD0] bg-white sm:grid-cols-12">
-      <button
-        type="button"
-        onClick={() => openQuickView(product)}
-        className="relative aspect-[4/3] sm:aspect-auto sm:h-full max-h-[260px] w-full overflow-hidden bg-[#F4EDE2] sm:col-span-5 cursor-pointer"
+      <Link
+        to={productPath}
+        aria-label={`View ${product.name}`}
+        className="relative aspect-[4/3] sm:aspect-auto sm:h-full max-h-[260px] w-full overflow-hidden bg-[#F4EDE2] sm:col-span-5 block"
       >
         <SafeImage src={product.image} alt={product.name} className="h-full w-full object-cover" />
-      </button>
+      </Link>
 
       <div className="flex flex-col justify-between gap-2.5 p-3 sm:p-4 sm:col-span-7">
         <div className="space-y-1">
@@ -51,13 +53,12 @@ function HorizontalSpotlightCard({ product }: { product: SareeProduct }) {
               {product.rating.toFixed(1)}
             </span>
           </div>
-          <button
-            type="button"
-            onClick={() => openQuickView(product)}
-            className="text-left font-display text-base sm:text-lg font-semibold text-[#231712] hover:text-[#7C1D26] cursor-pointer"
+          <Link
+            to={productPath}
+            className="block text-left font-display text-base sm:text-lg font-semibold text-[#231712] hover:text-[#7C1D26]"
           >
             {product.name}
-          </button>
+          </Link>
           <p className="text-xs text-[#635147] line-clamp-2">{product.shortDesc}</p>
           <p className="text-[11px] text-[#635147]">{product.fabricSpec}</p>
         </div>

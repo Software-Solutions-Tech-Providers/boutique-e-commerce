@@ -17,7 +17,7 @@ export function SafeImage({ src, alt, className = '', fallbackTitle, ...rest }: 
       >
         <Sparkles className="h-5 w-5 text-[#7C1D26]/60 mb-2" />
         <span className="font-display text-sm font-semibold text-[#231712] line-clamp-2">
-          {fallbackTitle || alt || 'ANIPOO AADAIYAKAM'}
+          {fallbackTitle || alt || 'Kora & Loom'}
         </span>
       </div>
     );

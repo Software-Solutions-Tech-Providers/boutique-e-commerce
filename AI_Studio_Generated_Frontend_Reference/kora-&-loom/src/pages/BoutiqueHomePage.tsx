@@ -196,17 +196,11 @@ export function BoutiqueHomePage() {
         {activeCategory !== 'All' ? (
           <>
             {primaryProductsSection}
-            <BoutiqueCategoryStrip
-              activeCategory={activeCategory}
-              onSelectCategory={handleSelectCategory}
-            />
+            <BoutiqueCategoryStrip />
           </>
         ) : (
           <>
-            <BoutiqueCategoryStrip
-              activeCategory={activeCategory}
-              onSelectCategory={handleSelectCategory}
-            />
+            <BoutiqueCategoryStrip />
             {primaryProductsSection}
           </>
         )}

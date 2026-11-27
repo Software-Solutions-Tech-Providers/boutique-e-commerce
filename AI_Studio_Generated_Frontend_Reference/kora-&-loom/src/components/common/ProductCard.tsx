@@ -51,7 +51,7 @@ export function ProductCard({ product, onTryItOn }: ProductCardProps) {
 
         {/* Top-Left Red Sale Badge matching Screenshots 2 & 5 */}
         {savingsPct > 0 && (
-          <span className="absolute top-2.5 left-2.5 rounded-xs bg-[#E11D48] px-2 py-0.5 text-[10px] font-bold text-white shadow-xs">
+          <span className="absolute top-1.5 left-1.5 sm:top-2.5 sm:left-2.5 rounded-xs bg-[#E11D48] px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold text-white shadow-xs">
             Sale {savingsPct}%
           </span>
         )}
@@ -61,33 +61,33 @@ export function ProductCard({ product, onTryItOn }: ProductCardProps) {
           type="button"
           onClick={handleWishlist}
           aria-label={isWishlisted ? `Remove ${product.name} from wishlist` : `Save ${product.name} to wishlist`}
-          className="absolute top-2.5 right-2.5 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-[#1C1917] shadow-sm transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-[#14532D]"
+          className="absolute top-1.5 right-1.5 sm:top-2.5 sm:right-2.5 flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-[#1C1917] shadow-sm transition-colors hover:bg-white focus-visible:outline-2 focus-visible:outline-[#14532D]"
         >
           <Heart className={`h-4 w-4 ${isWishlisted ? 'fill-[#991B1B] text-[#991B1B]' : ''}`} />
         </button>
 
         {product.tag && (
-          <span className="absolute bottom-2.5 left-2.5 bg-white/95 px-2 py-0.5 text-[10px] font-bold tracking-wide text-[#1C1917] rounded shadow-xs">
+          <span className="absolute bottom-1.5 left-1.5 sm:bottom-2.5 sm:left-2.5 bg-white/95 px-1.5 sm:px-2 py-0.5 text-[9px] sm:text-[10px] font-bold tracking-wide text-[#1C1917] rounded shadow-xs">
             {product.tag}
           </span>
         )}
       </Link>
 
-      <div className="flex flex-1 flex-col justify-between p-3.5 gap-2.5">
+      <div className="flex flex-1 flex-col justify-between p-2 sm:p-3.5 gap-1.5 sm:gap-2.5">
         {/* Full-width "ADD TO CART" Border Button matching Screenshots 2 & 5 */}
         <button
           type="button"
           onClick={handleQuickAdd}
-          className="w-full rounded-md border border-[#1C1917] bg-white py-2 text-xs font-bold uppercase tracking-wider text-[#1C1917] hover:bg-[#FAF9F6] transition-colors cursor-pointer"
+          className="w-full rounded-md border border-[#1C1917] bg-white py-1.5 sm:py-2 text-[11px] sm:text-xs font-bold uppercase tracking-wide sm:tracking-wider text-[#1C1917] hover:bg-[#FAF9F6] transition-colors cursor-pointer"
         >
           Add to Cart
         </button>
 
-        <div className="space-y-1">
-          <div className="flex items-center gap-1.5 text-[11px] text-[#57534E] truncate">
-            <span>{product.weave}</span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{product.rating.toFixed(1)} ★ ({product.reviewCount})</span>
+        <div className="space-y-0.5 sm:space-y-1">
+          <div className="flex items-center gap-1 text-[10px] sm:text-[11px] text-[#57534E] min-w-0">
+            <span className="truncate">{product.weave}</span>
+            <span aria-hidden="true" className="shrink-0">·</span>
+            <span className="tabular-nums shrink-0">{product.rating.toFixed(1)} ★</span>
           </div>
 
           <Link
@@ -98,16 +98,20 @@ export function ProductCard({ product, onTryItOn }: ProductCardProps) {
           </Link>
         </div>
 
-        <div className="space-y-1 pt-1 border-t border-[#E5E0D8]/70">
-          <div className="flex items-baseline gap-2 tabular-nums">
+        <div className="space-y-0.5 sm:space-y-1 pt-1 border-t border-[#E5E0D8]/70">
+          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 tabular-nums">
             {product.mrp > product.price && (
-              <span className="text-xs text-[#57534E] line-through">Rs. {formatINR(product.mrp)}</span>
+              <span className="text-[11px] sm:text-xs text-[#57534E] line-through whitespace-nowrap">
+                {formatINR(product.mrp)}
+              </span>
             )}
-            <span className="text-sm font-bold text-[#059669]">Rs. {formatINR(product.price)}</span>
+            <span className="text-xs sm:text-sm font-bold text-[#059669] whitespace-nowrap">
+              {formatINR(product.price)}
+            </span>
           </div>
 
-          <p className="text-[10px] text-[#57534E]">
-            or <strong className="text-[#059669] tabular-nums">{formatINR(emiMonth)}/Month</strong> · <span className="font-semibold text-[#5B1B29]">Buy on EMI</span>
+          <p className="text-[10px] text-[#57534E] leading-tight line-clamp-1">
+            or <strong className="text-[#059669] tabular-nums">{formatINR(emiMonth)}/mo</strong> · <span className="font-semibold text-[#5B1B29]">EMI</span>
           </p>
         </div>
       </div>

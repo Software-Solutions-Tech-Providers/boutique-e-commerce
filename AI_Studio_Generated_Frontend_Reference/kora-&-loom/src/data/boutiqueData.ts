@@ -70,7 +70,7 @@ export const BRAND_INFO = {
   addressLine1: '12 Sample Loom Street,',
   addressLine2: 'Heritage Market, Sample City – 600001',
   fullAddress: '12 Sample Loom Street, Heritage Market, Sample City – 600001',
-  phone: '+91 90000 00000',
+  phone: '+91 81245 36947',
   email: 'hello@koraandloom-demo.example',
   instagramHandle: '@koraandloom_demo',
   instagramUrl: 'https://www.instagram.com/koraandloom_demo',
@@ -140,6 +140,51 @@ export const BOUTIQUE_CATEGORIES: BoutiqueCategoryTile[] = [
     image: IMG_DIWALI,
   },
 ];
+
+export const BOUTIQUE_TO_PRODUCT_ID: Record<string, string> = {
+  'kanchipuram-emerald-temple': 'kanchipuram-temple-emerald',
+  'banarasi-crimson-katan': 'banarasi-katan-crimson',
+  'maheshwari-ochre-cotton-silk': 'maheshwari-ochre-rose',
+  'chanderi-ivory-linen': 'chanderi-ivory-linen',
+  'arani-soft-silk-peacock': 'emerald-soft-silk',
+  'kalamkari-blouse-jhumka-set': 'kalamkari-silk-blouse',
+  'festive-maroon-teal-duo': 'festive-duo-gift-set',
+  'kanchi-korvai-zari-heirloom': 'kanchi-korvai-zari-heirloom',
+};
+
+const PRODUCT_TO_BOUTIQUE_ID: Record<string, string> = Object.fromEntries(
+  Object.entries(BOUTIQUE_TO_PRODUCT_ID).map(([boutiqueId, productId]) => [productId, boutiqueId])
+);
+
+/** Resolves a boutique product id to the canonical Product id in src/data/products.ts. */
+export function getBoutiqueProductId(product: Pick<SareeProduct, 'id'>): string {
+  return BOUTIQUE_TO_PRODUCT_ID[product.id] ?? product.id;
+}
+
+/** Resolves a canonical Product id back to its boutique product id when available. */
+export function getProductToBoutiqueId(productId: string): string {
+  return PRODUCT_TO_BOUTIQUE_ID[productId] ?? productId;
+}
+
+/** Maps a boutique homepage card to its corresponding ProductDetailPage route. */
+export function getBoutiqueProductDetailPath(product: Pick<SareeProduct, 'id'>): string {
+  return `/product/${getBoutiqueProductId(product)}`;
+}
+
+const BOUTIQUE_CATEGORY_PATHS: Record<'All' | BoutiqueCategory, string> = {
+  All: '/collections',
+  'Kanchipuram Silks': '/collections/silk-sarees?weave=kanchipuram',
+  'Banarasi & Soft Silks': '/collections/silk-sarees?weave=banarasi-soft',
+  'Cotton & Maheshwari': '/collections?cat=Cotton+Sarees',
+  'Tissue Linen': '/collections?cat=Linen+Sarees',
+  'Ready-Made Blouses': '/collections?cat=Blouses',
+  'Bridal & Gift Combos': '/collections?occasion=Bridal+%26+Festive',
+};
+
+/** Maps a boutique category tile to the filtered CollectionPage route. */
+export function getBoutiqueCategoryPath(category: 'All' | BoutiqueCategory): string {
+  return BOUTIQUE_CATEGORY_PATHS[category] ?? '/collections';
+}
 
 export const SAREE_PRODUCTS: SareeProduct[] = [
   {

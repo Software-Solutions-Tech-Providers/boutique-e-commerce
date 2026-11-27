@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Heart, Minus, Plus, ShoppingBag, Star, X } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Heart, Minus, Plus, ShoppingBag, Star, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
+import { getBoutiqueProductDetailPath } from '../../data/boutiqueData';
 import { formatINR } from '../../utils/formatters';
 import { SafeImage } from '../common/SafeImage';
 
@@ -154,6 +156,15 @@ export function BoutiqueQuickViewModal() {
                 <Heart className={`h-4 w-4 ${isWishlisted ? 'fill-[#7C1D26] text-[#7C1D26]' : ''}`} />
               </button>
             </div>
+
+            <Link
+              to={getBoutiqueProductDetailPath(quickViewProduct)}
+              onClick={closeQuickView}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#7C1D26] hover:underline"
+            >
+              <span>View Full Product Details</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
           </div>
         </div>
       </div>
