@@ -9,13 +9,19 @@ import {
   Phone,
   PhoneCall,
 } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useLanguage } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
-import { BOUTIQUE_CATEGORIES, BoutiqueCategory, BRAND_INFO } from '../../data/boutiqueData';
+import {
+  BOUTIQUE_CATEGORIES,
+  BoutiqueCategory,
+  BRAND_INFO,
+  getBoutiqueCategoryPath,
+} from '../../data/boutiqueData';
 import { BoutiqueLogoMark } from './BoutiqueLogoMark';
 
 interface BoutiqueNewsletterAndFooterProps {
-  onSelectCategory: (cat: 'All' | BoutiqueCategory) => void;
+  onSelectCategory?: (cat: 'All' | BoutiqueCategory) => void;
   onOpenAccount?: () => void;
 }
 
@@ -101,6 +107,8 @@ export function BoutiqueNewsletterAndFooter({
 }: BoutiqueNewsletterAndFooterProps) {
   const { showToast } = useToast();
   const { t } = useLanguage();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [mobileNumber, setMobileNumber] = useState('');
   const [submittedNumber, setSubmittedNumber] = useState<string | null>(null);
 
@@ -116,18 +124,44 @@ export function BoutiqueNewsletterAndFooter({
     showToast('Thank you! Our shop team will contact you shortly.');
   };
 
-  const scrollToSection = (id: string) => {
+  const scrollToSection = (id: string, fallbackRoute = '/') => {
     const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: 'smooth' });
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+    navigate(fallbackRoute);
+    window.setTimeout(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+    }, 120);
+  };
+
+  const handleCategoryClick = (cat: 'All' | BoutiqueCategory) => {
+    if (onSelectCategory && pathname === '/') {
+      onSelectCategory(cat);
+      scrollToSection('bestsellers');
+      return;
+    }
+    navigate(getBoutiqueCategoryPath(cat));
+  };
+
+  const handleBrandTopClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (pathname === '/') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      navigate('/');
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
   };
 
   const phoneHref = BRAND_INFO.phone.replace(/\s+/g, '');
   const whatsappUrl = `https://wa.me/${phoneHref.replace(/^\+/, '')}`;
 
   return (
-    <>
+    <div className="space-y-4">
       {/* Customer Support Callback Request Section */}
-      <section id="customer-support" aria-labelledby="support-heading" className="w-full px-2 sm:px-4 lg:px-6">
+      <section id="customer-support" aria-labelledby="support-heading" className="w-full px-2 sm:px-4 lg:px-6 pt-4">
         <div className="rounded-xl border border-[#E6DDD0] bg-[#F4EDE2] p-3.5 sm:p-5 lg:flex lg:items-center lg:justify-between lg:gap-6">
           <div className="max-w-xl space-y-1">
             <p className="inline-flex items-center gap-1.5 text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider text-[#7C1D26]">
@@ -185,12 +219,13 @@ export function BoutiqueNewsletterAndFooter({
       </section>
 
       {/* Complete Full-Width Footer with Centered "Kora + Logo + Loom" */}
-      <footer className="w-full border-t border-[#E6DDD0] bg-[#231712] text-[#FCF9F4] pb-14 md:pb-0">
+      <footer className="w-full border-t border-[#E6DDD0] bg-[#231712] text-[#FCF9F4] pb-16 md:pb-0">
         <div className="w-full px-3 py-5 sm:px-5 lg:px-6 2xl:px-10">
           {/* Centered Brand Mark: Kora + Logo + Loom */}
           <div className="flex flex-col items-center justify-center border-b border-white/15 pb-4 text-center">
             <a
-              href="#top"
+              href="#/"
+              onClick={handleBrandTopClick}
               aria-label={`${BRAND_INFO.name} Top`}
               className="inline-flex items-center justify-center gap-2 whitespace-nowrap group"
             >
@@ -279,10 +314,7 @@ export function BoutiqueNewsletterAndFooter({
                   <li key={cat.id}>
                     <button
                       type="button"
-                      onClick={() => {
-                        onSelectCategory(cat.id);
-                        scrollToSection('bestsellers');
-                      }}
+                      onClick={() => handleCategoryClick(cat.id)}
                       className="hover:text-white hover:underline underline-offset-4 text-left cursor-pointer"
                     >
                       {t.categories[cat.id]}
@@ -301,10 +333,7 @@ export function BoutiqueNewsletterAndFooter({
                 <li>
                   <button
                     type="button"
-                    onClick={() => {
-                      onSelectCategory('All');
-                      scrollToSection('bestsellers');
-                    }}
+                    onClick={() => handleCategoryClick('All')}
                     className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
                   >
                     {t.bestSellers}
@@ -313,7 +342,7 @@ export function BoutiqueNewsletterAndFooter({
                 <li>
                   <button
                     type="button"
-                    onClick={() => scrollToSection('new-arrivals')}
+                    onClick={() => scrollToSection('new-arrivals', '/collections')}
                     className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
                   >
                     {t.newArrivals}
@@ -322,27 +351,25 @@ export function BoutiqueNewsletterAndFooter({
                 <li>
                   <button
                     type="button"
-                    onClick={() => scrollToSection('how-to-order')}
+                    onClick={() => scrollToSection('how-to-order', '/support')}
                     className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
                   >
                     {t.howToOrderTitle}
                   </button>
                 </li>
-                {onOpenAccount && (
-                  <li>
-                    <button
-                      type="button"
-                      onClick={onOpenAccount}
-                      className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
-                    >
-                      {t.howToCreateAccount}
-                    </button>
-                  </li>
-                )}
                 <li>
                   <button
                     type="button"
-                    onClick={() => scrollToSection('instagram-favorites')}
+                    onClick={() => (onOpenAccount ? onOpenAccount() : navigate('/account'))}
+                    className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
+                  >
+                    {t.howToCreateAccount}
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => scrollToSection('instagram-favorites', '/')}
                     className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
                   >
                     {t.igFavoritesTitle}
@@ -351,7 +378,7 @@ export function BoutiqueNewsletterAndFooter({
                 <li>
                   <button
                     type="button"
-                    onClick={() => scrollToSection('reviews')}
+                    onClick={() => scrollToSection('reviews', '/')}
                     className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
                   >
                     {t.happyCustomers}
@@ -360,7 +387,7 @@ export function BoutiqueNewsletterAndFooter({
                 <li>
                   <button
                     type="button"
-                    onClick={() => scrollToSection('customer-support')}
+                    onClick={() => scrollToSection('customer-support', '/support')}
                     className="hover:text-white hover:underline underline-offset-4 cursor-pointer"
                   >
                     {t.supportBadge}
@@ -416,6 +443,6 @@ export function BoutiqueNewsletterAndFooter({
           </div>
         </div>
       </footer>
-    </>
+    </div>
   );
 }

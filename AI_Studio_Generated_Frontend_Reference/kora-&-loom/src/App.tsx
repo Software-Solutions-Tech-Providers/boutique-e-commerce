@@ -112,20 +112,20 @@ export default function App() {
       <ToastProvider>
         <AuthProvider>
           <StoreProvider>
-            <ScrollToTop />
-            <Routes>
-              <Route
-                path="/"
-                element={
-                  <LanguageProvider>
+            <LanguageProvider>
+              <ScrollToTop />
+              <Routes>
+                <Route
+                  path="/"
+                  element={
                     <BoutiqueCartProvider>
                       <BoutiqueHomePage />
                     </BoutiqueCartProvider>
-                  </LanguageProvider>
-                }
-              />
-              <Route path="*" element={<MainLayout />} />
-            </Routes>
+                  }
+                />
+                <Route path="*" element={<MainLayout />} />
+              </Routes>
+            </LanguageProvider>
           </StoreProvider>
         </AuthProvider>
       </ToastProvider>

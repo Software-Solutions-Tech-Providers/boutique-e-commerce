@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowUpLeft,
   ChevronDown,
   Heart,
   MapPin,
@@ -9,7 +10,7 @@ import {
   User,
   X,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useBoutiqueCart } from '../../context/BoutiqueCartContext';
 import { useLanguage } from '../../context/LanguageContext';
 import { BoutiqueLogoMark } from './BoutiqueLogoMark';
@@ -18,11 +19,9 @@ import {
   BOUTIQUE_CATEGORIES,
   BoutiqueCategory,
   BRAND_INFO,
-  getBoutiqueProductDetailPath,
-  SAREE_PRODUCTS,
 } from '../../data/boutiqueData';
-import { formatINR } from '../../utils/formatters';
-import { SafeImage } from '../common/SafeImage';
+import { PRODUCTS } from '../../data/products';
+import { getWordCompletionSuggestions, splitHighlightSegments } from '../../utils/search';
 
 interface BoutiqueHeaderProps {
   activeCategory: 'All' | BoutiqueCategory;
@@ -35,6 +34,23 @@ interface BoutiqueHeaderProps {
   onOpenWishlist: () => void;
 }
 
+function HighlightedWord({ text, query }: { text: string; query: string }) {
+  const segments = splitHighlightSegments(text, query);
+  return (
+    <>
+      {segments.map((seg, idx) =>
+        seg.match ? (
+          <strong key={idx} className="font-semibold text-[#231712]">
+            {seg.text}
+          </strong>
+        ) : (
+          <span key={idx}>{seg.text}</span>
+        )
+      )}
+    </>
+  );
+}
+
 export function BoutiqueHeader({
   activeCategory,
   onSelectCategory,
@@ -45,22 +61,47 @@ export function BoutiqueHeader({
   onOpenAccount,
   onOpenWishlist,
 }: BoutiqueHeaderProps) {
+  const navigate = useNavigate();
   const { cartCount, openCart, wishlistIds } = useBoutiqueCart();
   const { language, setLanguage, t } = useLanguage();
   const [menuOpen, setMenuOpen] = useState(false);
   const [drawerSection, setDrawerSection] = useState<'sarees' | 'bridal' | null>('sarees');
+  const [activeSuggestionIdx, setActiveSuggestionIdx] = useState(-1);
 
-  const searchMatches = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return SAREE_PRODUCTS.slice(0, 4);
-    return SAREE_PRODUCTS.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q) ||
-        p.shortDesc.toLowerCase().includes(q)
-    ).slice(0, 6);
+  const desktopSearchRef = useRef<HTMLDivElement | null>(null);
+  const mobileSearchRef = useRef<HTMLDivElement | null>(null);
+  const desktopInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const { inlineCompletion, suggestions } = useMemo(
+    () => getWordCompletionSuggestions(PRODUCTS, searchQuery),
+    [searchQuery]
+  );
+
+  useEffect(() => {
+    setActiveSuggestionIdx(-1);
   }, [searchQuery]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inDesktop = desktopSearchRef.current?.contains(target);
+      const inMobile = mobileSearchRef.current?.contains(target);
+      if (!inDesktop && !inMobile) {
+        onToggleSearch(false);
+        setActiveSuggestionIdx(-1);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [onToggleSearch]);
+
+  const submitWordSearch = (term: string) => {
+    const clean = term.trim();
+    onToggleSearch(false);
+    setActiveSuggestionIdx(-1);
+    navigate(clean ? `/collections?q=${encodeURIComponent(clean)}` : '/collections');
+  };
 
   const scrollToSection = (sectionId: string) => {
     setMenuOpen(false);
@@ -73,75 +114,177 @@ export function BoutiqueHeader({
     onSelectCategory(cat);
   };
 
-  const renderSearchBox = (variant: 'mobile' | 'desktop') => (
-    <div
-      className={
-        variant === 'desktop'
-          ? 'relative w-full max-w-[210px] lg:max-w-[270px] xl:max-w-[330px] 2xl:max-w-[420px]'
-          : 'relative flex-1'
-      }
-    >
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#635147]" />
-      <input
-        type="search"
-        value={searchQuery}
-        onFocus={() => onToggleSearch(true)}
-        onChange={(e) => {
-          onSearchChange(e.target.value);
-          onToggleSearch(true);
-        }}
-        placeholder={t.searchPlaceholder}
-        aria-label={t.searchPlaceholder}
-        className="h-9 2xl:h-10 w-full rounded-full border border-[#E6DDD0] bg-white pl-9 pr-8 text-xs sm:text-sm 2xl:text-base text-[#231712] placeholder:text-[#635147]/75 focus:border-[#7C1D26] focus:outline-none"
-      />
-      {(searchQuery || searchOpen) && (
-        <button
-          type="button"
-          onClick={() => {
-            onSearchChange('');
-            onToggleSearch(false);
-          }}
-          aria-label="Clear search"
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-[#635147] hover:bg-[#F4EDE2] cursor-pointer"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      )}
+  const handleSearchKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    inputRef: React.RefObject<HTMLInputElement | null>
+  ) => {
+    if (e.key === 'Escape') {
+      onToggleSearch(false);
+      setActiveSuggestionIdx(-1);
+      inputRef.current?.blur();
+      return;
+    }
 
-      {/* Clean Live Search Dropdown */}
-      {searchOpen && (
-        <div
-          className={`absolute left-0 top-11 z-50 rounded-2xl border border-[#E6DDD0] bg-white p-3 shadow-xl space-y-2 ${
-            variant === 'desktop' ? 'w-[340px] lg:w-[420px]' : 'right-0'
-          }`}
+    // Optional inline word completion via Tab or ArrowRight at end of input (never forced on Enter)
+    if (
+      inlineCompletion &&
+      (e.key === 'Tab' ||
+        (e.key === 'ArrowRight' &&
+          e.currentTarget.selectionStart === e.currentTarget.value.length))
+    ) {
+      e.preventDefault();
+      onSearchChange(inlineCompletion);
+      return;
+    }
+
+    if (suggestions.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      onToggleSearch(true);
+      setActiveSuggestionIdx((prev) => (prev + 1) % suggestions.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      onToggleSearch(true);
+      setActiveSuggestionIdx((prev) => (prev <= 0 ? suggestions.length - 1 : prev - 1));
+    }
+  };
+
+  const renderSearchBox = (variant: 'mobile' | 'desktop') => {
+    const boxRef = variant === 'desktop' ? desktopSearchRef : mobileSearchRef;
+    const inputRef = variant === 'desktop' ? desktopInputRef : mobileInputRef;
+    const showSuggestions = searchOpen && searchQuery.trim().length > 0 && suggestions.length > 0;
+    const showGhost =
+      Boolean(inlineCompletion) &&
+      searchQuery.length > 0 &&
+      !searchQuery.startsWith(' ') &&
+      inlineCompletion!.toLowerCase().startsWith(searchQuery.toLowerCase());
+
+    return (
+      <div
+        ref={boxRef}
+        className={
+          variant === 'desktop'
+            ? 'relative w-full max-w-[210px] lg:max-w-[270px] xl:max-w-[330px] 2xl:max-w-[420px]'
+            : 'relative flex-1'
+        }
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const chosen =
+              activeSuggestionIdx >= 0 && suggestions[activeSuggestionIdx]
+                ? suggestions[activeSuggestionIdx]
+                : searchQuery;
+            submitWordSearch(chosen);
+          }}
+          className="relative flex items-center h-9 2xl:h-10 w-full rounded-full border border-[#E6DDD0] bg-white focus-within:border-[#7C1D26]"
         >
-          <div className="grid max-h-72 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
-            {searchMatches.map((item) => (
-              <Link
-                key={item.id}
-                to={getBoutiqueProductDetailPath(item)}
-                onClick={() => onToggleSearch(false)}
-                className="flex items-center gap-3 rounded-xl border border-[#E6DDD0]/80 bg-[#FCF9F4] p-2 text-left hover:border-[#7C1D26]/40"
-              >
-                <SafeImage
-                  src={item.image}
-                  alt={item.name}
-                  className="h-12 w-10 rounded-lg object-cover shrink-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-semibold text-[#231712]">{item.name}</p>
-                  <p className="text-[11px] text-[#635147] tabular-nums">{formatINR(item.price)}</p>
-                </div>
-              </Link>
-            ))}
-            {searchMatches.length === 0 && (
-              <p className="px-2 py-2 text-xs text-[#635147]">{t.noMatches}</p>
-            )}
+          <button
+            type="submit"
+            aria-label="Search collections"
+            className="absolute left-2.5 top-1/2 z-20 -translate-y-1/2 rounded-full p-0.5 text-[#635147] hover:text-[#7C1D26] cursor-pointer"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+
+          {/* Non-forced inline word completion hint aligned with input text */}
+          {showGhost && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-9 right-8 flex items-center overflow-hidden whitespace-pre text-xs sm:text-sm 2xl:text-base text-[#635147]/45 select-none"
+            >
+              <span className="invisible">{searchQuery}</span>
+              <span>{inlineCompletion!.slice(searchQuery.length)}</span>
+            </span>
+          )}
+
+          <input
+            ref={inputRef}
+            type="text"
+            inputMode="search"
+            value={searchQuery}
+            onFocus={() => {
+              if (searchQuery.trim().length > 0) onToggleSearch(true);
+            }}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              onSearchChange(nextVal);
+              onToggleSearch(nextVal.trim().length > 0);
+            }}
+            onKeyDown={(e) => handleSearchKeyDown(e, inputRef)}
+            placeholder={t.searchPlaceholder}
+            aria-label={t.searchPlaceholder}
+            aria-autocomplete="both"
+            autoComplete="off"
+            className="relative z-10 h-full w-full rounded-full bg-transparent pl-9 pr-8 text-xs sm:text-sm 2xl:text-base text-[#231712] placeholder:text-[#635147]/75 focus:outline-none"
+          />
+
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => {
+                onSearchChange('');
+                onToggleSearch(false);
+                setActiveSuggestionIdx(-1);
+                inputRef.current?.focus();
+              }}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 z-20 -translate-y-1/2 rounded-full p-1 text-[#635147] hover:bg-[#F4EDE2] cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </form>
+
+        {/* Optional Word-Completion Suggestions Only (no live product cards) */}
+        {showSuggestions && (
+          <div
+            className={`absolute left-0 top-11 z-50 rounded-2xl border border-[#E6DDD0] bg-white py-1.5 shadow-xl ${
+              variant === 'desktop' ? 'w-[300px] lg:w-[360px]' : 'right-0'
+            }`}
+          >
+            <ul role="listbox" aria-label="Word completion suggestions" className="divide-y divide-[#F4EDE2]">
+              {suggestions.map((word, idx) => (
+                <li
+                  key={word}
+                  className={`flex items-center justify-between gap-2 px-3 py-1.5 text-xs sm:text-sm transition-colors ${
+                    activeSuggestionIdx === idx ? 'bg-[#F4EDE2]' : 'hover:bg-[#FCF9F4]'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSearchChange(word);
+                      submitWordSearch(word);
+                    }}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left text-[#635147] cursor-pointer"
+                  >
+                    <Search className="h-3.5 w-3.5 shrink-0 text-[#635147]/75" />
+                    <span className="truncate">
+                      <HighlightedWord text={word} query={searchQuery} />
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSearchChange(word);
+                      inputRef.current?.focus();
+                    }}
+                    aria-label={`Use word ${word}`}
+                    title="Fill word"
+                    className="shrink-0 rounded p-1 text-[#635147] hover:bg-white hover:text-[#7C1D26] cursor-pointer"
+                  >
+                    <ArrowUpLeft className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        )}
+      </div>
+    );
+  };
 
   return (
     <>

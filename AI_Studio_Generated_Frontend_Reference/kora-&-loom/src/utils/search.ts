@@ -249,6 +249,104 @@ export function getSearchSuggestions(
   return Array.from(pool.values()).slice(0, 6);
 }
 
+export interface WordCompletionResult {
+  /** Single inline ghost completion matching the full input prefix (never forced). */
+  inlineCompletion: string | null;
+  /** Clickable word/phrase completion suggestions ranked by prefix match first. */
+  suggestions: string[];
+}
+
+/**
+ * Builds non-intrusive word and phrase completions from the product catalog
+ * without matching or returning product cards.
+ */
+export function getWordCompletionSuggestions(
+  products: Product[],
+  rawQuery: string,
+  limit = 6
+): WordCompletionResult {
+  const trimmedStart = rawQuery.trimStart();
+  const q = trimmedStart.toLowerCase();
+  if (!q) return { inlineCompletion: null, suggestions: [] };
+
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const lastToken = tokens[tokens.length - 1] || '';
+  const prefixBeforeLast = tokens.length > 1 ? `${tokens.slice(0, -1).join(' ')} ` : '';
+
+  const phrasePool = new Map<string, string>();
+  const wordPool = new Map<string, string>();
+
+  const registerPhrase = (phrase: string) => {
+    const clean = phrase.trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (!phrasePool.has(key)) phrasePool.set(key, clean);
+  };
+
+  const registerWords = (text: string) => {
+    for (const rawWord of text.split(/[\s/&,-]+/)) {
+      const clean = rawWord.replace(/[^a-zA-Z0-9-]/g, '').trim();
+      if (clean.length < 3) continue;
+      const key = clean.toLowerCase();
+      if (!wordPool.has(key)) wordPool.set(key, clean);
+    }
+  };
+
+  for (const p of products) {
+    registerPhrase(p.weave);
+    registerPhrase(p.category);
+    registerPhrase(p.occasion);
+    registerPhrase(p.name);
+    registerWords(`${p.name} ${p.weave} ${p.category} ${p.occasion} ${p.sku}`);
+  }
+
+  for (const trend of TRENDING_SEARCHES) {
+    registerPhrase(trend.query);
+  }
+
+  const startsWithMatches: string[] = [];
+  const containsMatches: string[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (target: string[], candidate: string) => {
+    const key = candidate.toLowerCase();
+    if (key === q || seen.has(key)) return;
+    seen.add(key);
+    target.push(candidate);
+  };
+
+  // 1. Word-level completions on the currently typed last token
+  if (lastToken.length >= 1) {
+    for (const [key, originalWord] of wordPool.entries()) {
+      if (key.startsWith(lastToken) && key !== lastToken) {
+        const completed = `${prefixBeforeLast}${originalWord.toLowerCase()}`;
+        pushUnique(startsWithMatches, prefixBeforeLast ? completed : originalWord);
+      }
+    }
+  }
+
+  // 2. Multi-word phrase completions starting with the full typed query
+  for (const [key, originalPhrase] of phrasePool.entries()) {
+    if (key.startsWith(q)) {
+      pushUnique(startsWithMatches, originalPhrase);
+    } else if (q.length >= 2 && key.includes(q)) {
+      pushUnique(containsMatches, originalPhrase);
+    }
+  }
+
+  const suggestions = [...startsWithMatches, ...containsMatches].slice(0, limit);
+
+  // Only show inline ghost completion if a candidate strictly extends the exact typed string
+  const exactPrefixCandidate = startsWithMatches.find((s) =>
+    s.toLowerCase().startsWith(trimmedStart.toLowerCase())
+  );
+  const inlineCompletion = exactPrefixCandidate
+    ? `${trimmedStart}${exactPrefixCandidate.slice(trimmedStart.length)}`
+    : null;
+
+  return { inlineCompletion, suggestions };
+}
+
 /**
  * Splits text into normal and highlighted segments matching query tokens.
  */
