@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { BoutiqueCartProvider } from './context/BoutiqueCartContext';
 import { HashRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { CartDrawer } from './components/cart/CartDrawer';
 import { Footer } from './components/layout/Footer';
@@ -10,25 +11,7 @@ import { AuthProvider } from './context/AuthContext';
 import { StoreProvider, useStore } from './context/StoreContext';
 import { ToastProvider } from './context/ToastContext';
 import { PRODUCTS } from './data/products';
-import { AccountPage } from './pages/AccountPage';
-import { CampaignPage } from './pages/CampaignPage';
-import { CheckoutPage } from './pages/CheckoutPage';
-import { CollectionPage } from './pages/CollectionPage';
-import { HomePage } from './pages/HomePage';
-import { OffersPage } from './pages/OffersPage';
-import { OrderConfirmationPage } from './pages/OrderConfirmationPage';
-import { ProductDetailPage } from './pages/ProductDetailPage';
-import { QuizPage } from './pages/QuizPage';
-import { SupportPage } from './pages/SupportPage';
-import { WishlistPage } from './pages/WishlistPage';
-
-function ScrollToTop() {
-  const { pathname } = useLocation();
-  useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'auto' });
-  }, [pathname]);
-  return null;
-}
+import { BoutiqueHomePage } from './pages/BoutiqueHomePage';
 
 function MainLayout() {
   const { addToCart } = useStore();
@@ -87,6 +70,11 @@ function MainLayout() {
         }}
       />
     </div>
+        <LanguageProvider>
+      <ToastProvider>
+        <BoutiqueCartProvider>
+          <BoutiqueHomePage />
+        </BoutiqueCartProvider>
   );
 }
 
@@ -101,6 +89,6 @@ export default function App() {
           </StoreProvider>
         </AuthProvider>
       </ToastProvider>
-    </HashRouter>
+    </LanguageProvider>
   );
 }

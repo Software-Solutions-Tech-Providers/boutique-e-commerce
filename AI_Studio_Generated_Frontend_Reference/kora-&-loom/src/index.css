@@ -1,17 +1,16 @@
 @import "tailwindcss";
 
 @theme {
-  --font-display: "Cormorant Garamond", Georgia, serif;
+  --font-display: "Fraunces", Georgia, serif;
   --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --color-canvas: #FAF9F6;
-  --color-surface: #FFFFFF;
-  --color-linen: #F2EFE9;
-  --color-ink: #1C1917;
-  --color-muted: #57534E;
-  --color-border: #E5E0D8;
-  --color-accent: #14532D;
-  --color-accent-hover: #0F3F22;
-  --color-ochre: #B45309;
+  --color-cream: #FCF9F4;
+  --color-almond: #F4EDE2;
+  --color-espresso: #231712;
+  --color-umber: #635147;
+  --color-hairline: #E6DDD0;
+  --color-maroon: #7C1D26;
+  --color-maroon-dark: #5E141B;
+  --color-saffron: #B4690E;
   --color-sand: #C4A482;
   --color-sand-hover: #B28F6B;
   --color-sand-light: #F5EFEB;
@@ -77,9 +76,163 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
-
 .ease-settle {
   transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root {
+  --pdp-sticky-offset: 0px;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@media (max-width: 767px) {
+  body[data-pdp-sticky="true"] {
+    --pdp-sticky-offset: 4.5rem;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 1. Modal Backdrop & Panel Entrance */
+.kl-modal-backdrop {
+  transition: opacity 180ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+  }
+}
+
+.kl-modal-panel {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@media (min-width: 640px) {
+  .kl-modal-panel {
+    @starting-style {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+  }
+}
+
+/* 2. Mobile Sticky Bar Enter / Exit */
+.kl-sticky-bar {
+  opacity: 0;
+  transform: translateY(16px);
+  pointer-events: none;
+  transition: opacity 220ms var(--ease-drawer), transform 220ms var(--ease-drawer);
+}
+
+.kl-sticky-bar[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* 3. Gallery Image Swap (directional horizontal slide-fade) & Pointer-Gated Hover Zoom */
+.kl-gallery-swap {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.kl-gallery-swap[data-dir="next"] {
+  @starting-style {
+    opacity: 0.72;
+    transform: translateX(18px);
+  }
+}
+
+.kl-gallery-swap[data-dir="prev"] {
+  @starting-style {
+    opacity: 0.72;
+    transform: translateX(-18px);
+  }
+}
+
+.kl-gallery-zoom {
+  transition: transform 300ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .group:hover .kl-gallery-zoom {
+    transform: scale(1.02);
+  }
+}
+
+/* 4. Smooth Accordion Collapse */
+.kl-accordion-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--ease-out);
+}
+
+.kl-accordion-content[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.kl-accordion-inner {
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out);
+}
+
+.kl-accordion-content[data-open="true"] > .kl-accordion-inner {
+  opacity: 1;
+}
+
+/* 5. Wishlist Heart Settle */
+@keyframes klHeartSettle {
+  0% {
+    transform: scale(0.9);
+  }
+  55% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.kl-heart-active {
+  animation: klHeartSettle 180ms var(--ease-out);
+}
+
+/* 6. Footer Value Proposition Banner Slide */
+.kl-banner-slide {
+  transition: opacity 220ms var(--ease-out), transform 220ms var(--ease-out);
+}
+
+.kl-banner-slide[data-dir="next"] {
+  @starting-style {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+.kl-banner-slide[data-dir="prev"] {
+  @starting-style {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
 }
 
 /* 1. Modal Backdrop & Panel Entrance */
